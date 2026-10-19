@@ -2,7 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/auth_service.dart';
-import '../home/authenticated_home_screen.dart';
+
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -50,11 +50,9 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
-          builder: (_) => const AuthenticatedHomeScreen(),
-        ),
+      _showMessage(
+        message: 'Login successful.',
+        backgroundColor: Colors.green.shade700,
       );
     } on FirebaseAuthException catch (error) {
       debugPrint(
@@ -229,7 +227,7 @@ class _LoginScreenState extends State<LoginScreen> {
                       ],
                     ),
                     child: Image.asset(
-                      'assets/images/foodbridge_logo.jpg',
+                      'assets/images/foodbridge_logo.png',
                       fit: BoxFit.contain,
                     ),
                   ),

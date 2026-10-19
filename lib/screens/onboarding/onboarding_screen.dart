@@ -117,7 +117,7 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Image.asset(
-                  'assets/images/foodbridge_logo.jpg',
+                  'assets/images/foodbridge_logo.png',
                   fit: BoxFit.contain,
                 ),
               ),
