@@ -1,0 +1,46 @@
+{
+  "project_info": {
+    "project_number": "945056894139",
+    "project_id": "new-foodbridge",
+    "storage_bucket": "new-foodbridge.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:945056894139:android:71ed911845971f5cf7ed9e",
+        "android_client_info": {
+          "package_name": "com.example.foodbridge"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "945056894139-8vhrjbqf6morkqefc193ia08b4biidg0.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCOEWK6bwpWOMh_6vXFuSqxXON6fwinq74"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "945056894139-8vhrjbqf6morkqefc193ia08b4biidg0.apps.googleusercontent.com",
+              "client_type": 3
+            },
+            {
+              "client_id": "945056894139-qsd8c6u0v94sssl5d609ta54n41j7emc.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.example.foodbridge"
+              }
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
