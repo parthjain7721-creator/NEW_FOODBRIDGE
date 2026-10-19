@@ -71,21 +71,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
         uid: user.uid,
         email: user.email ?? _emailController.text.trim(),
         role: _selectedRole,
-        name: _nameController.text,
-        phone: _phoneController.text,
-        organizationName: _organizationController.text,
+        name: _nameController.text.trim(),
+        phone: _phoneController.text.trim(),
+        organizationName: _organizationController.text.trim(),
       );
+
+      // Firebase automatically signs in a newly registered user.
+      // Sign out so the user can log in normally from the Login screen.
+      await _authService.logout();
 
       if (!mounted) {
         return;
       }
 
       _showMessage(
-        'Registration successful. You can now log in.',
-        Colors.green.shade700,
+        message: 'Registration successful. Please log in.',
+        backgroundColor: Colors.green.shade700,
       );
 
-      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await Future<void>.delayed(
+        const Duration(milliseconds: 800),
+      );
 
       if (!mounted) {
         return;
@@ -102,21 +108,27 @@ class _RegisterScreenState extends State<RegisterScreen> {
       }
 
       _showMessage(
-        _getErrorMessage(error.code),
-        Colors.red.shade700,
+        message: _getErrorMessage(error.code),
+        backgroundColor: Colors.red.shade700,
       );
     } on FirebaseException catch (error) {
       debugPrint(
         'Firestore error: ${error.code} - ${error.message}',
       );
 
+      // If the Auth account was created but Firestore failed,
+      // sign out to avoid leaving the app in a half-registered state.
+      await FirebaseAuth.instance.signOut();
+
       if (!mounted) {
         return;
       }
 
       _showMessage(
-        'Account created, but profile could not be saved.',
-        Colors.orange.shade800,
+        message:
+            'Account created, but profile could not be saved. '
+            'Please try again.',
+        backgroundColor: Colors.orange.shade800,
       );
     } catch (error) {
       debugPrint('Unexpected registration error: $error');
@@ -126,8 +138,8 @@ class _RegisterScreenState extends State<RegisterScreen> {
       }
 
       _showMessage(
-        'Unable to complete registration.',
-        Colors.red.shade700,
+        message: 'Unable to complete registration.',
+        backgroundColor: Colors.red.shade700,
       );
     } finally {
       if (mounted) {
@@ -138,7 +150,10 @@ class _RegisterScreenState extends State<RegisterScreen> {
     }
   }
 
-  void _showMessage(String message, Color backgroundColor) {
+  void _showMessage({
+    required String message,
+    required Color backgroundColor,
+  }) {
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -146,6 +161,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
           content: Text(message),
           backgroundColor: backgroundColor,
           behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 4),
         ),
       );
   }
@@ -154,14 +170,22 @@ class _RegisterScreenState extends State<RegisterScreen> {
     switch (code) {
       case 'email-already-in-use':
         return 'This email is already registered.';
+
       case 'invalid-email':
         return 'Please enter a valid email address.';
+
       case 'weak-password':
         return 'Password must contain at least 6 characters.';
+
       case 'network-request-failed':
         return 'Check your Internet connection.';
+
       case 'operation-not-allowed':
         return 'Email/password authentication is disabled.';
+
+      case 'too-many-requests':
+        return 'Too many attempts. Try again later.';
+
       default:
         return 'Unable to create account. ($code)';
     }
@@ -226,7 +250,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   onChanged: _isLoading
                       ? null
                       : (value) {
-                          if (value == null) return;
+                          if (value == null) {
+                            return;
+                          }
 
                           setState(() {
                             _selectedRole = value;
@@ -255,7 +281,7 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     prefixIcon: Icon(Icons.email_outlined),
                   ),
                   validator: (value) {
-                    final email = value?.trim() ?? '';
+                    final String email = value?.trim() ?? '';
 
                     if (email.isEmpty) {
                       return 'Enter your email address';
@@ -307,6 +333,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     labelText: 'Password',
                     prefixIcon: const Icon(Icons.lock_outline),
                     suffixIcon: IconButton(
+                      tooltip: _obscurePassword
+                          ? 'Show password'
+                          : 'Hide password',
                       onPressed: () {
                         setState(() {
                           _obscurePassword = !_obscurePassword;
@@ -340,6 +369,9 @@ class _RegisterScreenState extends State<RegisterScreen> {
                     labelText: 'Confirm password',
                     prefixIcon: const Icon(Icons.lock_reset_outlined),
                     suffixIcon: IconButton(
+                      tooltip: _obscureConfirmPassword
+                          ? 'Show password'
+                          : 'Hide password',
                       onPressed: () {
                         setState(() {
                           _obscureConfirmPassword =
@@ -366,20 +398,24 @@ class _RegisterScreenState extends State<RegisterScreen> {
                   },
                 ),
                 const SizedBox(height: 28),
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _register,
-                  child: _isLoading
-                      ? const SizedBox(
-                          height: 23,
-                          width: 23,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.white,
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _isLoading ? null : _register,
+                    child: _isLoading
+                        ? const SizedBox(
+                            height: 23,
+                            width: 23,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              valueColor:
+                                  AlwaysStoppedAnimation<Color>(
+                                Colors.white,
+                              ),
                             ),
-                          ),
-                        )
-                      : const Text('Create account'),
+                          )
+                        : const Text('Create account'),
+                  ),
                 ),
               ],
             ),

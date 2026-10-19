@@ -1,4 +1,5 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
+import '../models/donation_model.dart';
 
 class FirestoreService {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
@@ -39,4 +40,14 @@ class FirestoreService {
       'updatedAt': FieldValue.serverTimestamp(),
     });
   }
+  Future<String> createDonation(DonationModel donation) async {
+  final document = _firestore.collection('donations').doc();
+
+  await document.set({
+    ...donation.toMap(),
+    'donationId': document.id,
+  });
+
+  return document.id;
+}
 } 

@@ -2,7 +2,6 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/auth_service.dart';
-
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -50,10 +49,9 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      _showMessage(
-        message: 'Login successful.',
-        backgroundColor: Colors.green.shade700,
-      );
+      // Do not navigate here.
+      // AuthGate listens to FirebaseAuth.instance.authStateChanges()
+      // and will automatically open the correct dashboard.
     } on FirebaseAuthException catch (error) {
       debugPrint(
         'Firebase Auth error: ${error.code} - ${error.message}',
@@ -325,20 +323,24 @@ class _LoginScreenState extends State<LoginScreen> {
                   ),
                 ),
                 const SizedBox(height: 12),
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _login,
-                  child: _isLoading
-                      ? const SizedBox(
-                          width: 23,
-                          height: 23,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2.5,
-                            valueColor: AlwaysStoppedAnimation<Color>(
-                              Colors.white,
+                SizedBox(
+                  width: double.infinity,
+                  child: ElevatedButton(
+                    onPressed: _isLoading ? null : _login,
+                    child: _isLoading
+                        ? const SizedBox(
+                            width: 23,
+                            height: 23,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2.5,
+                              valueColor:
+                                  AlwaysStoppedAnimation<Color>(
+                                Colors.white,
+                              ),
                             ),
-                          ),
-                        )
-                      : const Text('Login'),
+                          )
+                        : const Text('Login'),
+                  ),
                 ),
                 const SizedBox(height: 16),
                 Center(
