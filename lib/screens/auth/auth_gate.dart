@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../services/firestore_service.dart';
 import '../auth/login_screen.dart';
 import '../donor/donor_dashboard_screen.dart';
+import '../ngo/ngo_dashboard_screen.dart';
 
 class AuthGate extends StatelessWidget {
   const AuthGate({super.key});
@@ -14,15 +15,17 @@ class AuthGate extends StatelessWidget {
     return StreamBuilder<User?>(
       stream: FirebaseAuth.instance.authStateChanges(),
       builder: (context, authSnapshot) {
-        if (authSnapshot.connectionState == ConnectionState.waiting) {
+        if (authSnapshot.connectionState ==
+            ConnectionState.waiting) {
           return const _LoadingScreen(
             message: 'Checking your account...',
           );
         }
 
         if (authSnapshot.hasError) {
-          return const _ErrorScreen(
-            message: 'Authentication could not be checked.',
+          return _ErrorScreen(
+            message:
+                'Authentication error:\n${authSnapshot.error}',
           );
         }
 
@@ -32,13 +35,16 @@ class AuthGate extends StatelessWidget {
           return const LoginScreen();
         }
 
-        return UserProfileLoader(user: user);
+        return UserProfileLoader(
+          key: ValueKey(user.uid),
+          user: user,
+        );
       },
     );
   }
 }
 
-class UserProfileLoader extends StatelessWidget {
+class UserProfileLoader extends StatefulWidget {
   final User user;
 
   const UserProfileLoader({
@@ -47,10 +53,49 @@ class UserProfileLoader extends StatelessWidget {
   });
 
   @override
+  State<UserProfileLoader> createState() =>
+      _UserProfileLoaderState();
+}
+
+class _UserProfileLoaderState
+    extends State<UserProfileLoader> {
+  late Future<
+      DocumentSnapshot<Map<String, dynamic>>> _profileFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadProfile();
+  }
+
+  @override
+  void didUpdateWidget(
+    covariant UserProfileLoader oldWidget,
+  ) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.user.uid != widget.user.uid) {
+      _loadProfile();
+    }
+  }
+
+  void _loadProfile() {
+    _profileFuture = FirestoreService().getUserProfile(
+      widget.user.uid,
+    );
+  }
+
+  void _retry() {
+    setState(() {
+      _loadProfile();
+    });
+  }
+
+  @override
   Widget build(BuildContext context) {
     return FutureBuilder<
         DocumentSnapshot<Map<String, dynamic>>>(
-      future: FirestoreService().getUserProfile(user.uid),
+      future: _profileFuture,
       builder: (context, profileSnapshot) {
         if (profileSnapshot.connectionState ==
             ConnectionState.waiting) {
@@ -60,25 +105,58 @@ class UserProfileLoader extends StatelessWidget {
         }
 
         if (profileSnapshot.hasError) {
-          return ProfileRecoveryScreen(
-            user: user,
-            errorMessage:
-                'Could not load your Firestore profile.',
+          return _ProfileErrorScreen(
+            title: 'Unable to load profile',
+            message:
+                'Your login succeeded, but Firestore profile loading failed.\n\n'
+                'User UID: ${widget.user.uid}\n\n'
+                'Error: ${profileSnapshot.error}',
+            onRetry: _retry,
           );
         }
 
-        final document = profileSnapshot.data;
+        final DocumentSnapshot<Map<String, dynamic>>?
+            document = profileSnapshot.data;
 
         if (document == null || !document.exists) {
-          return ProfileRecoveryScreen(
-            user: user,
-            errorMessage:
-                'Your authentication account exists, but your FoodBridge profile is missing.',
+          return _ProfileErrorScreen(
+            title: 'Profile not found',
+            message:
+                'Your authentication account exists, but this profile does not exist:\n\n'
+                'users/${widget.user.uid}',
+            onRetry: _retry,
           );
         }
 
         final Map<String, dynamic>? data = document.data();
-        final String role = data?['role'] as String? ?? 'donor';
+
+        if (data == null) {
+          return _ProfileErrorScreen(
+            title: 'Empty profile',
+            message:
+                'The Firestore profile exists but contains no data.',
+            onRetry: _retry,
+          );
+        }
+
+        final String role = (data['role'] as String? ?? '')
+            .trim()
+            .toLowerCase();
+
+        debugPrint(
+          'Authenticated user UID: ${widget.user.uid}',
+        );
+        debugPrint('Loaded Firestore role: $role');
+
+        if (role.isEmpty) {
+          return _ProfileErrorScreen(
+            title: 'Role missing',
+            message:
+                'Your profile does not contain a role.\n\n'
+                'Set the role to donor, ngo, or volunteer.',
+            onRetry: _retry,
+          );
+        }
 
         return RoleDashboard(role: role);
       },
@@ -101,26 +179,59 @@ class RoleDashboard extends StatelessWidget {
         return const DonorDashboardScreen();
 
       case 'ngo':
-        return const RolePlaceholderScreen(
-          title: 'NGO Dashboard',
-          icon: Icons.home_work_outlined,
-          description: 'View and claim available food donations.',
-        );
+        return const NgoDashboardScreen();
 
       case 'volunteer':
         return const RolePlaceholderScreen(
           title: 'Volunteer Dashboard',
           icon: Icons.delivery_dining_outlined,
-          description: 'View pickup tasks and delivery assignments.',
+          description:
+              'View pickup tasks and delivery assignments.',
         );
 
       default:
-        return const RolePlaceholderScreen(
-          title: 'FoodBridge Dashboard',
-          icon: Icons.dashboard_outlined,
-          description: 'Your account is ready.',
-        );
+        return UnknownRoleScreen(role: role);
     }
+  }
+}
+
+class UnknownRoleScreen extends StatelessWidget {
+  final String role;
+
+  const UnknownRoleScreen({
+    super.key,
+    required this.role,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Invalid account role'),
+        actions: [
+          IconButton(
+            tooltip: 'Logout',
+            onPressed: () async {
+              await FirebaseAuth.instance.signOut();
+            },
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Text(
+            'The role "$role" is not supported.\n\n'
+            'Allowed roles are:\n'
+            'donor\n'
+            'ngo\n'
+            'volunteer',
+            textAlign: TextAlign.center,
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -144,6 +255,10 @@ class _ProfileRecoveryScreenState
   bool _isCreating = false;
 
   Future<void> _createMissingProfile() async {
+    if (_isCreating) {
+      return;
+    }
+
     setState(() {
       _isCreating = true;
     });
@@ -170,6 +285,11 @@ class _ProfileRecoveryScreenState
         (route) => false,
       );
     } on FirebaseException catch (error) {
+      debugPrint(
+        'Profile creation error: '
+        '${error.code} - ${error.message}',
+      );
+
       if (!mounted) {
         return;
       }
@@ -178,13 +298,13 @@ class _ProfileRecoveryScreenState
         'Profile creation failed: ${error.code}',
       );
     } catch (error) {
+      debugPrint('Unexpected profile creation error: $error');
+
       if (!mounted) {
         return;
       }
 
-      _showError(
-        'Unable to create your profile.',
-      );
+      _showError('Unable to create your profile.');
     } finally {
       if (mounted) {
         setState(() {
@@ -194,17 +314,16 @@ class _ProfileRecoveryScreenState
     }
   }
 
-  Future<void> _logout() async {
-    await FirebaseAuth.instance.signOut();
-  }
-
   void _showError(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: Colors.red.shade700,
-      ),
-    );
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+        ),
+      );
   }
 
   @override
@@ -214,7 +333,12 @@ class _ProfileRecoveryScreenState
         title: const Text('Complete profile'),
         actions: [
           IconButton(
-            onPressed: _isCreating ? null : _logout,
+            tooltip: 'Logout',
+            onPressed: _isCreating
+                ? null
+                : () async {
+                    await FirebaseAuth.instance.signOut();
+                  },
             icon: const Icon(Icons.logout),
           ),
         ],
@@ -284,6 +408,7 @@ class RolePlaceholderScreen extends StatelessWidget {
         title: Text(title),
         actions: [
           IconButton(
+            tooltip: 'Logout',
             onPressed: () async {
               await FirebaseAuth.instance.signOut();
             },
@@ -305,13 +430,79 @@ class RolePlaceholderScreen extends StatelessWidget {
               const SizedBox(height: 24),
               Text(
                 title,
-                style: Theme.of(context).textTheme.headlineMedium,
                 textAlign: TextAlign.center,
+                style: Theme.of(context)
+                    .textTheme
+                    .headlineMedium,
               ),
               const SizedBox(height: 12),
               Text(
                 description,
                 textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ProfileErrorScreen extends StatelessWidget {
+  final String title;
+  final String message;
+  final VoidCallback onRetry;
+
+  const _ProfileErrorScreen({
+    required this.title,
+    required this.message,
+    required this.onRetry,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: Text(title),
+        actions: [
+          IconButton(
+            tooltip: 'Logout',
+            onPressed: () async {
+              await FirebaseAuth.instance.signOut();
+            },
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.error_outline,
+                size: 72,
+                color: Colors.orange,
+              ),
+              const SizedBox(height: 24),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 24),
+              ElevatedButton.icon(
+                onPressed: onRetry,
+                icon: const Icon(Icons.refresh),
+                label: const Text('Try again'),
+              ),
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () async {
+                  await FirebaseAuth.instance.signOut();
+                },
+                icon: const Icon(Icons.logout),
+                label: const Text('Log out'),
               ),
             ],
           ),
@@ -337,7 +528,10 @@ class _LoadingScreen extends StatelessWidget {
           children: [
             const CircularProgressIndicator(),
             const SizedBox(height: 20),
-            Text(message),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+            ),
           ],
         ),
       ),
