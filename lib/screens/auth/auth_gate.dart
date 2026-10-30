@@ -56,8 +56,8 @@ class UserProfileLoader extends StatefulWidget {
 
 class _UserProfileLoaderState
     extends State<UserProfileLoader> {
-  late Future<DocumentSnapshot<Map<String, dynamic>>>
-      _profileFuture;
+  late Future<
+      DocumentSnapshot<Map<String, dynamic>>> _profileFuture;
 
   @override
   void initState() {
@@ -135,7 +135,9 @@ class _UserProfileLoaderState
         }
 
         final role =
-            (data['role'] as String? ?? '').trim().toLowerCase();
+            (data['role'] as String? ?? '')
+                .trim()
+                .toLowerCase();
 
         debugPrint('Loaded role: $role');
 
@@ -144,7 +146,7 @@ class _UserProfileLoaderState
             title: 'Role missing',
             details:
                 'The profile exists, but the role field is missing.\n\n'
-                'Add: role = donor',
+                'Add: role = ngo',
             onRetry: _retry,
           );
         }

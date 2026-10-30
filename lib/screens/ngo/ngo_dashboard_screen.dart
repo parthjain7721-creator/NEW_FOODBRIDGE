@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'ngo_claimed_donations_screen.dart';
+
 class NgoDashboardScreen extends StatefulWidget {
   const NgoDashboardScreen({super.key});
 
@@ -12,7 +14,8 @@ class NgoDashboardScreen extends StatefulWidget {
       _NgoDashboardScreenState();
 }
 
-class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
+class _NgoDashboardScreenState
+    extends State<NgoDashboardScreen> {
   final FirebaseFirestore _firestore =
       FirebaseFirestore.instance;
 
@@ -98,7 +101,9 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
             currentData['pickupDeadline'] as Timestamp?;
 
         if (deadlineTimestamp != null &&
-            deadlineTimestamp.toDate().isBefore(DateTime.now())) {
+            deadlineTimestamp
+                .toDate()
+                .isBefore(DateTime.now())) {
           throw Exception(
             'The Food Rescue Window has closed.',
           );
@@ -136,16 +141,30 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     }
   }
 
-  String _formatRemainingTime(DateTime deadline) {
-    final Duration remaining = deadline.difference(_now);
+  void _openClaimedDonations() {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) =>
+            const NgoClaimedDonationsScreen(),
+      ),
+    );
+  }
 
-    if (remaining.isNegative || remaining.inSeconds == 0) {
+  String _formatRemainingTime(DateTime deadline) {
+    final Duration remaining =
+        deadline.difference(_now);
+
+    if (remaining.isNegative ||
+        remaining.inSeconds == 0) {
       return 'Window closed';
     }
 
     final int hours = remaining.inHours;
-    final int minutes = remaining.inMinutes.remainder(60);
-    final int seconds = remaining.inSeconds.remainder(60);
+    final int minutes =
+        remaining.inMinutes.remainder(60);
+    final int seconds =
+        remaining.inSeconds.remainder(60);
 
     if (hours > 0) {
       return '${hours}h ${minutes}m remaining';
@@ -155,7 +174,8 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   }
 
   Color _countdownColor(DateTime deadline) {
-    final Duration remaining = deadline.difference(_now);
+    final Duration remaining =
+        deadline.difference(_now);
 
     if (remaining.isNegative) {
       return Colors.red.shade700;
@@ -229,6 +249,13 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
         title: const Text('NGO Dashboard'),
         actions: [
           IconButton(
+            tooltip: 'My claimed donations',
+            onPressed: _openClaimedDonations,
+            icon: const Icon(
+              Icons.inventory_outlined,
+            ),
+          ),
+          IconButton(
             tooltip: 'Logout',
             onPressed: () async {
               await _auth.signOut();
@@ -237,7 +264,8 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           ),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      body: StreamBuilder<
+          QuerySnapshot<Map<String, dynamic>>>(
         stream: _availableDonations(),
         builder: (context, snapshot) {
           if (snapshot.connectionState ==
@@ -260,7 +288,8 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
             );
           }
 
-          final documents = snapshot.data?.docs ?? [];
+          final documents =
+              snapshot.data?.docs ?? [];
 
           if (documents.isEmpty) {
             return const _EmptyDonationsView();
@@ -271,15 +300,16 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           donations.sort((first, second) {
             final DateTime firstDeadline =
                 _readDateTime(
-                  first.data()['pickupDeadline'],
-                );
+              first.data()['pickupDeadline'],
+            );
 
             final DateTime secondDeadline =
                 _readDateTime(
-                  second.data()['pickupDeadline'],
-                );
+              second.data()['pickupDeadline'],
+            );
 
-            return firstDeadline.compareTo(secondDeadline);
+            return firstDeadline
+                .compareTo(secondDeadline);
           });
 
           return RefreshIndicator(
@@ -291,9 +321,12 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
             child: ListView(
               padding: const EdgeInsets.all(16),
               children: [
-                _buildHeader(documents.length),
+                _buildHeader(
+                  donations.length,
+                ),
                 const SizedBox(height: 16),
-                ...donations.map(_buildDonationCard),
+                ...donations
+                    .map(_buildDonationCard),
               ],
             ),
           );
@@ -310,12 +343,15 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           children: [
             const CircleAvatar(
               radius: 26,
-              child: Icon(Icons.home_work_outlined),
+              child: Icon(
+                Icons.home_work_outlined,
+              ),
             ),
             const SizedBox(width: 14),
             Expanded(
               child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
+                crossAxisAlignment:
+                    CrossAxisAlignment.start,
                 children: [
                   Text(
                     'Available food donations',
@@ -339,28 +375,34 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   Widget _buildDonationCard(
     QueryDocumentSnapshot<Map<String, dynamic>> document,
   ) {
-    final Map<String, dynamic> donation = document.data();
+    final Map<String, dynamic> donation =
+        document.data();
 
     final DateTime deadline = _readDateTime(
       donation['pickupDeadline'],
     );
 
     final String category =
-        donation['foodCategory'] as String? ?? 'Food donation';
+        donation['foodCategory'] as String? ??
+            'Food donation';
 
     final String storage =
-        donation['storageMethod'] as String? ?? 'unknown';
+        donation['storageMethod'] as String? ??
+            'unknown';
 
     final String eligibility =
-        donation['eligibilityStatus'] as String? ?? 'unknown';
+        donation['eligibilityStatus'] as String? ??
+            'unknown';
 
     final String allergens =
         donation['allergens'] as String? ?? '';
 
-    final int quantity =
-        _readInt(donation['quantity']);
+    final int quantity = _readInt(
+      donation['quantity'],
+    );
 
-    final bool isExpired = deadline.isBefore(_now);
+    final bool isExpired =
+        deadline.isBefore(_now);
 
     return Card(
       margin: const EdgeInsets.only(bottom: 16),
@@ -370,7 +412,8 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
+              crossAxisAlignment:
+                  CrossAxisAlignment.start,
               children: [
                 Expanded(
                   child: Text(
@@ -381,7 +424,9 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
                   ),
                 ),
                 _StatusChip(
-                  label: _eligibilityLabel(eligibility),
+                  label: _eligibilityLabel(
+                    eligibility,
+                  ),
                   color: _countdownColor(deadline),
                 ),
               ],
@@ -418,20 +463,24 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
               decoration: BoxDecoration(
                 color: _countdownColor(deadline)
                     .withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(10),
+                borderRadius:
+                    BorderRadius.circular(10),
               ),
               child: Row(
                 children: [
                   Icon(
                     Icons.timer_outlined,
-                    color: _countdownColor(deadline),
+                    color:
+                        _countdownColor(deadline),
                   ),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
                       _formatRemainingTime(deadline),
                       style: TextStyle(
-                        color: _countdownColor(deadline),
+                        color: _countdownColor(
+                          deadline,
+                        ),
                         fontWeight: FontWeight.w700,
                       ),
                     ),
@@ -449,9 +498,13 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
                           document.id,
                           donation,
                         ),
-                icon: const Icon(Icons.volunteer_activism_outlined),
+                icon: const Icon(
+                  Icons.volunteer_activism_outlined,
+                ),
                 label: Text(
-                  isExpired ? 'Window closed' : 'Claim donation',
+                  isExpired
+                      ? 'Window closed'
+                      : 'Claim donation',
                 ),
               ),
             ),
@@ -482,7 +535,10 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
       return value.toInt();
     }
 
-    return int.tryParse(value?.toString() ?? '') ?? 0;
+    return int.tryParse(
+          value?.toString() ?? '',
+        ) ??
+        0;
   }
 }
 
@@ -545,7 +601,9 @@ class _StatusChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      constraints: const BoxConstraints(maxWidth: 150),
+      constraints: const BoxConstraints(
+        maxWidth: 150,
+      ),
       padding: const EdgeInsets.symmetric(
         horizontal: 10,
         vertical: 6,
@@ -586,7 +644,9 @@ class _EmptyDonationsView extends StatelessWidget {
             const SizedBox(height: 20),
             Text(
               'No donations available',
-              style: Theme.of(context).textTheme.titleLarge,
+              style: Theme.of(context)
+                  .textTheme
+                  .titleLarge,
               textAlign: TextAlign.center,
             ),
             const SizedBox(height: 8),
