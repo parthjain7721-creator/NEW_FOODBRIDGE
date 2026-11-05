@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'ngo_pickup_confirmation_screen.dart';
+
 class DonationDetailsScreen extends StatefulWidget {
   final String donationId;
 
@@ -19,28 +21,43 @@ class DonationDetailsScreen extends StatefulWidget {
 
 class _DonationDetailsScreenState
     extends State<DonationDetailsScreen> {
-  final FirebaseFirestore _firestore =
-      FirebaseFirestore.instance;
-
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+
+  late Stream<DocumentSnapshot<Map<String, dynamic>>> _donationStream;
 
   Timer? _countdownTimer;
   DateTime _now = DateTime.now();
+
+  bool _isClaiming = false;
 
   @override
   void initState() {
     super.initState();
 
+    _connectDonation();
+
     _countdownTimer = Timer.periodic(
       const Duration(seconds: 1),
       (_) {
-        if (mounted) {
-          setState(() {
-            _now = DateTime.now();
-          });
+        if (!mounted) {
+          return;
         }
+
+        setState(() {
+          _now = DateTime.now();
+        });
       },
     );
+  }
+
+  @override
+  void didUpdateWidget(covariant DonationDetailsScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.donationId != widget.donationId) {
+      _connectDonation();
+    }
   }
 
   @override
@@ -49,57 +66,95 @@ class _DonationDetailsScreenState
     super.dispose();
   }
 
-  Future<void> _claimDonation(
-    Map<String, dynamic> donation,
-  ) async {
+  void _connectDonation() {
+    _donationStream = _firestore
+        .collection('donations')
+        .doc(widget.donationId)
+        .snapshots();
+  }
+
+  void _retry() {
+    setState(() {
+      _connectDonation();
+    });
+  }
+
+  Future<void> _claimDonation() async {
+    if (_isClaiming) {
+      return;
+    }
+
     final User? user = _auth.currentUser;
 
     if (user == null) {
       _showMessage(
-        'Please log in again.',
+        'Your session has ended. Please log in again.',
         Colors.red.shade700,
       );
       return;
     }
 
-    final DocumentReference<Map<String, dynamic>> donationRef =
-        _firestore
-            .collection('donations')
-            .doc(widget.donationId);
+    setState(() {
+      _isClaiming = true;
+    });
 
     try {
+      final donationRef =
+          _firestore.collection('donations').doc(widget.donationId);
+
+      final profileRef = _firestore.collection('users').doc(user.uid);
+
       await _firestore.runTransaction((transaction) async {
-        final DocumentSnapshot<Map<String, dynamic>> snapshot =
-            await transaction.get(donationRef);
+        // Perform all reads before writes.
+        final profileSnapshot = await transaction.get(profileRef);
+        final donationSnapshot = await transaction.get(donationRef);
 
-        if (!snapshot.exists) {
-          throw Exception('Donation no longer exists.');
-        }
+        final Map<String, dynamic>? profile = profileSnapshot.data();
+        final String role = _readText(profile?['role'], '')
+            .trim()
+            .toLowerCase();
 
-        final Map<String, dynamic>? currentData =
-            snapshot.data();
-
-        if (currentData == null) {
-          throw Exception('Donation data is unavailable.');
-        }
-
-        final String currentStatus =
-            currentData['status'] as String? ?? 'unknown';
-
-        if (currentStatus != 'available') {
-          throw Exception(
-            'This donation has already been claimed.',
+        if (role != 'ngo' || profile?['isActive'] == false) {
+          throw StateError(
+            'An active NGO profile is required to claim donations.',
           );
         }
 
-        final Timestamp? deadline =
-            currentData['pickupDeadline'] as Timestamp?;
+        final Map<String, dynamic>? donation = donationSnapshot.data();
 
-        if (deadline != null &&
-            deadline.toDate().isBefore(DateTime.now())) {
-          throw Exception(
-            'The Food Rescue Window has closed.',
+        if (!donationSnapshot.exists || donation == null) {
+          throw StateError('This donation no longer exists.');
+        }
+
+        if (donation['donorId'] == user.uid) {
+          throw StateError('You cannot claim your own donation.');
+        }
+
+        if (donation['status'] != 'available') {
+          throw StateError(
+            'This donation is no longer available for claiming.',
           );
+        }
+
+        final Object? eligibility = donation['eligibilityStatus'];
+
+        if (eligibility != 'eligible' && eligibility != 'urgent') {
+          throw StateError(
+            'This donation is not eligible for an ordinary claim. '
+            'Manual-review donations require a separate review process.',
+          );
+        }
+
+        final Object? rawDeadline = donation['pickupDeadline'];
+
+        if (rawDeadline is! Timestamp) {
+          throw StateError(
+            'The donation has no valid pickup deadline.',
+          );
+        }
+
+        if (!rawDeadline.toDate().isAfter(DateTime.now())) {
+          throw StateError('The Food Rescue Window has closed.');
         }
 
         transaction.update(donationRef, {
@@ -117,24 +172,64 @@ class _DonationDetailsScreenState
       }
 
       _showMessage(
-        'Donation claimed successfully.',
+        'Donation claimed. Next, confirm capacity and pickup time.',
         Colors.green.shade700,
       );
-    } catch (error) {
-      debugPrint('Donation claim error: $error');
+    } on FirebaseException catch (error, stackTrace) {
+      debugPrint(
+        'Donation claim failed: ${error.code} - ${error.message}',
+      );
+      debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
         return;
       }
 
       _showMessage(
-        error.toString().replaceFirst('Exception: ', ''),
+        'Unable to claim donation. (${error.code})',
         Colors.red.shade700,
       );
+    } on StateError catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      _showMessage(
+        error.message.toString(),
+        Colors.red.shade700,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Unexpected donation claim error: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) {
+        return;
+      }
+
+      _showMessage(
+        'Unable to claim donation. Please try again.',
+        Colors.red.shade700,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isClaiming = false;
+        });
+      }
     }
   }
 
-  DateTime _readDateTime(dynamic value) {
+  void _openPickupConfirmation() {
+    Navigator.of(context).push<bool>(
+      MaterialPageRoute<bool>(
+        builder: (_) => NgoPickupConfirmationScreen(
+          donationId: widget.donationId,
+        ),
+      ),
+    );
+  }
+
+  DateTime? _readDateTime(dynamic value) {
     if (value is Timestamp) {
       return value.toDate();
     }
@@ -143,50 +238,55 @@ class _DonationDetailsScreenState
       return value;
     }
 
-    return DateTime.now();
+    return null;
   }
 
-  int _readInt(dynamic value) {
-    if (value is int) {
-      return value;
+  String _readText(dynamic value, String fallback) {
+    if (value is String && value.trim().isNotEmpty) {
+      return value.trim();
     }
 
-    if (value is num) {
-      return value.toInt();
-    }
-
-    return int.tryParse(
-          value?.toString() ?? '',
-        ) ??
-        0;
+    return fallback;
   }
 
-  String _formatDateTime(DateTime value) {
+  String _quantityLabel(dynamic value) {
+    if (value is num && value.isFinite && value > 0) {
+      return '$value portions/packets';
+    }
+
+    return 'Not recorded';
+  }
+
+  String _formatDateTime(DateTime? value) {
+    if (value == null) {
+      return 'Not recorded';
+    }
+
     final DateTime local = value.toLocal();
 
     String twoDigits(int number) {
       return number.toString().padLeft(2, '0');
     }
 
-    return '${local.day}/${twoDigits(local.month)}/'
+    return '${twoDigits(local.day)}/${twoDigits(local.month)}/'
         '${local.year} ${twoDigits(local.hour)}:'
         '${twoDigits(local.minute)}';
   }
 
-  String _formatRemainingTime(DateTime deadline) {
-    final Duration remaining =
-        deadline.difference(_now);
+  String _formatRemainingTime(DateTime? deadline) {
+    if (deadline == null) {
+      return 'Pickup deadline not recorded';
+    }
 
-    if (remaining.isNegative ||
-        remaining.inSeconds == 0) {
-      return 'Rescue window closed';
+    final Duration remaining = deadline.difference(_now);
+
+    if (remaining <= Duration.zero) {
+      return 'Pickup window closed';
     }
 
     final int hours = remaining.inHours;
-    final int minutes =
-        remaining.inMinutes.remainder(60);
-    final int seconds =
-        remaining.inSeconds.remainder(60);
+    final int minutes = remaining.inMinutes.remainder(60);
+    final int seconds = remaining.inSeconds.remainder(60);
 
     if (hours > 0) {
       return '${hours}h ${minutes}m ${seconds}s remaining';
@@ -195,15 +295,18 @@ class _DonationDetailsScreenState
     return '${minutes}m ${seconds}s remaining';
   }
 
-  Color _countdownColor(DateTime deadline) {
-    final Duration remaining =
-        deadline.difference(_now);
+  Color _countdownColor(DateTime? deadline) {
+    if (deadline == null) {
+      return Colors.grey.shade700;
+    }
 
-    if (remaining.isNegative) {
+    final Duration remaining = deadline.difference(_now);
+
+    if (remaining <= Duration.zero) {
       return Colors.red.shade700;
     }
 
-    if (remaining.inMinutes <= 30) {
+    if (remaining <= const Duration(minutes: 30)) {
       return Colors.orange.shade800;
     }
 
@@ -251,7 +354,7 @@ class _DonationDetailsScreenState
       case 'not_eligible':
         return 'Not eligible for redistribution';
       default:
-        return value;
+        return 'Unknown eligibility';
     }
   }
 
@@ -273,14 +376,17 @@ class _DonationDetailsScreenState
         return 'Rejected by NGO';
       case 'expired':
         return 'Expired';
+      case 'cancelled':
+        return 'Cancelled';
       default:
-        return value;
+        return 'Unknown status';
     }
   }
 
   Color _statusColor(String value) {
     switch (value) {
       case 'available':
+      case 'accepted':
         return Colors.green.shade700;
       case 'claimed':
         return Colors.blue.shade700;
@@ -290,15 +396,41 @@ class _DonationDetailsScreenState
         return Colors.orange.shade800;
       case 'delivered':
         return Colors.teal.shade700;
-      case 'accepted':
-        return Colors.green.shade800;
       case 'rejected':
-        return Colors.red.shade700;
       case 'expired':
         return Colors.red.shade700;
       default:
         return Colors.grey.shade700;
     }
+  }
+
+  String _volunteerLabel(Map<String, dynamic> donation) {
+    final String status = _readText(donation['status'], 'unknown');
+    final String assignment = _readText(
+      donation['volunteerAssignmentStatus'],
+      'pending',
+    );
+    final String volunteerId = _readText(
+      donation['assignedVolunteerId'],
+      '',
+    );
+
+    switch (status) {
+      case 'picked_up':
+        return 'Picked up by volunteer';
+      case 'delivered':
+        return 'Delivered to NGO';
+      case 'accepted':
+        return 'Delivery accepted by NGO';
+      case 'rejected':
+        return 'Donation rejected by NGO';
+    }
+
+    if (volunteerId.isNotEmpty || assignment == 'assigned') {
+      return 'Volunteer assigned';
+    }
+
+    return 'Not assigned';
   }
 
   void _showMessage(String message, Color color) {
@@ -319,36 +451,43 @@ class _DonationDetailsScreenState
       appBar: AppBar(
         title: const Text('Donation details'),
       ),
-      body: StreamBuilder<
-          DocumentSnapshot<Map<String, dynamic>>>(
-        stream: _firestore
-            .collection('donations')
-            .doc(widget.donationId)
-            .snapshots(),
+      body: StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+        stream: _donationStream,
         builder: (context, snapshot) {
-          if (snapshot.connectionState ==
-              ConnectionState.waiting) {
-            return const Center(
-              child: CircularProgressIndicator(),
-            );
-          }
-
           if (snapshot.hasError) {
             return Center(
-              child: Padding(
+              child: SingleChildScrollView(
                 padding: const EdgeInsets.all(24),
-                child: Text(
-                  'Unable to load donation details.\n\n'
-                  '${snapshot.error}',
-                  textAlign: TextAlign.center,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Unable to load donation details.\n\n'
+                      '${snapshot.error}',
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    ElevatedButton.icon(
+                      onPressed: _retry,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Try again'),
+                    ),
+                  ],
                 ),
               ),
             );
           }
 
-          final document = snapshot.data;
+          if (!snapshot.hasData) {
+            return const Center(
+              child: CircularProgressIndicator(),
+            );
+          }
 
-          if (document == null || !document.exists) {
+          final document = snapshot.data!;
+          final Map<String, dynamic>? donation = document.data();
+
+          if (!document.exists || donation == null) {
             return const Center(
               child: Padding(
                 padding: EdgeInsets.all(24),
@@ -360,129 +499,148 @@ class _DonationDetailsScreenState
             );
           }
 
-          final Map<String, dynamic> donation =
-              document.data() ?? {};
-
-          final DateTime preparedAt = _readDateTime(
-            donation['preparedAt'],
-          );
-
-          final DateTime postedAt = _readDateTime(
-            donation['postedAt'],
-          );
-
-          final DateTime pickupDeadline =
-              _readDateTime(
+          final DateTime? deadline = _readDateTime(
             donation['pickupDeadline'],
           );
 
-          final String donationId =
-              donation['donationId'] as String? ??
-                  document.id;
-
-          final String donorId =
-              donation['donorId'] as String? ?? '';
-
-          final String foodCategory =
-              donation['foodCategory'] as String? ??
-                  'Food donation';
-
-          final String storageMethod =
-              donation['storageMethod'] as String? ??
-                  'unknown';
-
-          final String packagingState =
-              donation['packagingState'] as String? ??
-                  'unknown';
-
-          final String allergens =
-              donation['allergens'] as String? ?? '';
-
-          final String eligibilityStatus =
-              donation['eligibilityStatus'] as String? ??
-                  'unknown';
-
-          final String status =
-              donation['status'] as String? ??
-                  'available';
-
-          final int quantity = _readInt(
-            donation['quantity'],
+          final String status = _readText(
+            donation['status'],
+            'unknown',
           );
 
-          final String? claimedByNgoId =
-              donation['claimedByNgoId'] as String?;
+          final String eligibility = _readText(
+            donation['eligibilityStatus'],
+            'unknown',
+          );
 
-          final DateTime? claimedAt =
-              donation['claimedAt'] is Timestamp
-                  ? (donation['claimedAt'] as Timestamp)
-                      .toDate()
-                  : null;
+          final String claimant = _readText(
+            donation['claimedByNgoId'],
+            '',
+          );
 
-          final bool isExpired =
-              pickupDeadline.isBefore(_now);
+          final String donorId = _readText(
+            donation['donorId'],
+            '',
+          );
 
-          final bool isAvailable =
-              status == 'available' && !isExpired;
+          final String? currentUid = _auth.currentUser?.uid;
+
+          final bool isClaimOwner =
+              currentUid != null && claimant == currentUid;
+
+          final bool windowOpen =
+              deadline != null && deadline.isAfter(_now);
+
+          final bool ordinarilyEligible =
+              eligibility == 'eligible' || eligibility == 'urgent';
+
+          final bool pickupConfirmed =
+              donation['ngoPickupConfirmed'] == true;
+
+          final bool canClaim =
+              currentUid != null &&
+              currentUid != donorId &&
+              status == 'available' &&
+              ordinarilyEligible &&
+              windowOpen;
+
+          final bool canConfirmPickup =
+              isClaimOwner &&
+              status == 'claimed' &&
+              !pickupConfirmed &&
+              ordinarilyEligible &&
+              windowOpen;
+
+          final bool showCountdown =
+              status == 'available' ||
+              status == 'claimed' ||
+              status == 'volunteer_assigned';
 
           return SingleChildScrollView(
             padding: const EdgeInsets.all(16),
             child: Column(
-              crossAxisAlignment:
-                  CrossAxisAlignment.start,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                _buildHeaderCard(
-                  donationId: donationId,
-                  foodCategory: foodCategory,
-                  status: status,
-                ),
-                const SizedBox(height: 16),
-                _buildRescueWindowCard(
-                  pickupDeadline: pickupDeadline,
-                  isExpired: isExpired,
-                ),
-                const SizedBox(height: 16),
-                _buildDonationPassportCard(
-                  donationId: donationId,
-                  donorId: donorId,
-                  foodCategory: foodCategory,
-                  quantity: quantity,
-                  storageMethod: storageMethod,
-                  packagingState: packagingState,
-                  allergens: allergens,
-                  preparedAt: preparedAt,
-                  postedAt: postedAt,
-                  pickupDeadline: pickupDeadline,
-                  eligibilityStatus:
-                      eligibilityStatus,
-                ),
-                const SizedBox(height: 16),
-                _buildClaimInformationCard(
-                  status: status,
-                  claimedByNgoId: claimedByNgoId,
-                  claimedAt: claimedAt,
-                ),
-                const SizedBox(height: 24),
-                if (isAvailable)
-                  SizedBox(
-                    width: double.infinity,
-                    child: ElevatedButton.icon(
-                      onPressed: () =>
-                          _claimDonation(donation),
-                      icon: const Icon(
-                        Icons.volunteer_activism_outlined,
-                      ),
-                      label: const Text(
-                        'Claim this donation',
+                _section(
+                  title: _readText(
+                    donation['foodCategory'],
+                    'Food donation',
+                  ),
+                  icon: Icons.restaurant_outlined,
+                  children: [
+                    SelectableText('Donation ID: ${document.id}'),
+                    const SizedBox(height: 12),
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: _StatusChip(
+                        label: _statusLabel(status),
+                        color: _statusColor(status),
                       ),
                     ),
+                  ],
+                ),
+                if (showCountdown) ...[
+                  const SizedBox(height: 16),
+                  _buildRescueWindowCard(deadline),
+                ],
+                const SizedBox(height: 16),
+                _buildPassportCard(document.id, donation),
+                const SizedBox(height: 16),
+                _buildClaimCard(donation),
+                const SizedBox(height: 16),
+                if (canConfirmPickup)
+                  ElevatedButton.icon(
+                    onPressed: _openPickupConfirmation,
+                    icon: const Icon(Icons.event_available_outlined),
+                    label: const Text(
+                      'Confirm capacity and pickup time',
+                    ),
                   ),
-                if (!isAvailable)
-                  _buildStatusNotice(
-                    status: status,
-                    isExpired: isExpired,
+                if (canClaim)
+                  ElevatedButton.icon(
+                    onPressed: _isClaiming ? null : _claimDonation,
+                    icon: _isClaiming
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                            ),
+                          )
+                        : const Icon(
+                            Icons.volunteer_activism_outlined,
+                          ),
+                    label: Text(
+                      _isClaiming ? 'Claiming...' : 'Claim this donation',
+                    ),
                   ),
-                const SizedBox(height: 32),
+                if (status == 'available' && !canClaim)
+                  _notice(
+                    !ordinarilyEligible
+                        ? 'This donation requires review or is not '
+                            'eligible for redistribution.'
+                        : !windowOpen
+                            ? 'A valid, open pickup window is required '
+                                'before claiming.'
+                            : 'Sign in with an eligible NGO account '
+                                'to claim a donation from another donor.',
+                  ),
+                if (pickupConfirmed && status == 'claimed')
+                  _notice(
+                    'NGO pickup confirmation is recorded. '
+                    'Donor confirmation and volunteer assignment '
+                    'are separate steps. A closed pickup window '
+                    'still prevents collection.',
+                  ),
+                const SizedBox(height: 16),
+                const Text(
+                  'FoodBridge displays redistribution eligibility based '
+                  'on declarations and rules. It does not certify food '
+                  'safety. Pickup inspection and final NGO acceptance '
+                  'are still required.',
+                  textAlign: TextAlign.center,
+                ),
+                const SizedBox(height: 24),
               ],
             ),
           );
@@ -491,48 +649,190 @@ class _DonationDetailsScreenState
     );
   }
 
-  Widget _buildHeaderCard({
-    required String donationId,
-    required String foodCategory,
-    required String status,
-  }) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              foodCategory,
-              style: Theme.of(context)
-                  .textTheme
-                  .headlineSmall,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Donation ID: $donationId',
-              style: TextStyle(
-                color: Colors.grey.shade700,
+  Widget _buildRescueWindowCard(DateTime? deadline) {
+    final Color color = _countdownColor(deadline);
+
+    return _section(
+      title: 'Food Rescue Window',
+      icon: Icons.timer_outlined,
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            color: color.withValues(alpha: 0.10),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _formatRemainingTime(deadline),
+                style: TextStyle(
+                  color: color,
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
-            ),
-            const SizedBox(height: 14),
-            _StatusChip(
-              label: _statusLabel(status),
-              color: _statusColor(status),
-            ),
-          ],
+              const SizedBox(height: 8),
+              Text('Pickup deadline: ${_formatDateTime(deadline)}'),
+            ],
+          ),
         ),
-      ),
+      ],
     );
   }
 
-  Widget _buildRescueWindowCard({
-    required DateTime pickupDeadline,
-    required bool isExpired,
-  }) {
-    final Color countdownColor =
-        _countdownColor(pickupDeadline);
+  Widget _buildPassportCard(
+    String donationId,
+    Map<String, dynamic> donation,
+  ) {
+    final Object? declaration = donation['donorDeclaration'];
 
+    return _section(
+      title: 'Donation Passport',
+      icon: Icons.badge_outlined,
+      children: [
+        _InfoRow(label: 'Donation ID', value: donationId),
+        _InfoRow(
+          label: 'Donor ID',
+          value: _readText(donation['donorId'], 'Not recorded'),
+        ),
+        _InfoRow(
+          label: 'Food category',
+          value: _readText(donation['foodCategory'], 'Not recorded'),
+        ),
+        _InfoRow(
+          label: 'Quantity',
+          value: _quantityLabel(donation['quantity']),
+        ),
+        _InfoRow(
+          label: 'Storage method',
+          value: _storageLabel(
+            _readText(donation['storageMethod'], 'unknown'),
+          ),
+        ),
+        _InfoRow(
+          label: 'Packaging',
+          value: _packagingLabel(
+            _readText(donation['packagingState'], 'Not recorded'),
+          ),
+        ),
+        _InfoRow(
+          label: 'Allergens',
+          value: _readText(
+            donation['allergens'],
+            'Not declared — this does not mean allergen-free',
+          ),
+        ),
+        _InfoRow(
+          label: 'Prepared at',
+          value: _formatDateTime(
+            _readDateTime(donation['preparedAt']),
+          ),
+        ),
+        _InfoRow(
+          label: 'Posted at',
+          value: _formatDateTime(
+            _readDateTime(donation['postedAt']),
+          ),
+        ),
+        _InfoRow(
+          label: 'Pickup deadline',
+          value: _formatDateTime(
+            _readDateTime(donation['pickupDeadline']),
+          ),
+        ),
+        _InfoRow(
+          label: 'Eligibility',
+          value: _eligibilityLabel(
+            _readText(donation['eligibilityStatus'], 'unknown'),
+          ),
+        ),
+        _InfoRow(
+          label: 'Donor declaration',
+          value: declaration is String && declaration.trim().isNotEmpty
+              ? declaration.trim()
+              : declaration == true
+                  ? 'Donor confirmation recorded'
+                  : declaration == false
+                      ? 'Donor confirmation not given'
+                      : 'No separate donor declaration recorded',
+        ),
+      ],
+    );
+  }
+
+  Widget _buildClaimCard(Map<String, dynamic> donation) {
+    final String claimant = _readText(
+      donation['claimedByNgoId'],
+      '',
+    );
+
+    if (claimant.isEmpty) {
+      return _section(
+        title: 'NGO claim information',
+        icon: Icons.home_work_outlined,
+        children: [
+          const Text('This donation has not been claimed yet.'),
+        ],
+      );
+    }
+
+    final bool confirmed = donation['ngoPickupConfirmed'] == true;
+
+    return _section(
+      title: 'NGO claim information',
+      icon: Icons.home_work_outlined,
+      children: [
+        _InfoRow(label: 'Claimed by NGO', value: claimant),
+        _InfoRow(
+          label: 'Claimed at',
+          value: _formatDateTime(
+            _readDateTime(donation['claimedAt']),
+          ),
+        ),
+        _InfoRow(
+          label: 'Pickup confirmation',
+          value: confirmed ? 'Confirmed' : 'Not confirmed',
+        ),
+        _InfoRow(
+          label: 'Receiving capacity',
+          value: donation['ngoCapacityConfirmed'] == true
+              ? 'Confirmed'
+              : 'Not confirmed',
+        ),
+        if (confirmed) ...[
+          _InfoRow(
+            label: 'Confirmed quantity',
+            value: _quantityLabel(donation['ngoConfirmedQuantity']),
+          ),
+          _InfoRow(
+            label: 'Planned pickup',
+            value: _formatDateTime(
+              _readDateTime(donation['plannedPickupAt']),
+            ),
+          ),
+          _InfoRow(
+            label: 'Confirmed at',
+            value: _formatDateTime(
+              _readDateTime(donation['ngoPickupConfirmedAt']),
+            ),
+          ),
+        ],
+        _InfoRow(
+          label: 'Volunteer status',
+          value: _volunteerLabel(donation),
+        ),
+      ],
+    );
+  }
+
+  Widget _section({
+    required String title,
+    required IconData icon,
+    required List<Widget> children,
+  }) {
     return Card(
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -540,286 +840,47 @@ class _DonationDetailsScreenState
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  Icons.timer_outlined,
-                  color: countdownColor,
-                ),
+                Icon(icon, color: const Color(0xFF356B4D)),
                 const SizedBox(width: 10),
-                Text(
-                  'Food Rescue Window',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge,
-                ),
-              ],
-            ),
-            const SizedBox(height: 14),
-            Container(
-              width: double.infinity,
-              padding: const EdgeInsets.all(16),
-              decoration: BoxDecoration(
-                color: countdownColor
-                    .withValues(alpha: 0.10),
-                borderRadius:
-                    BorderRadius.circular(12),
-              ),
-              child: Column(
-                crossAxisAlignment:
-                    CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    _formatRemainingTime(
-                      pickupDeadline,
-                    ),
-                    style: TextStyle(
-                      color: countdownColor,
-                      fontSize: 20,
-                      fontWeight: FontWeight.w800,
-                    ),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleLarge,
                   ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Pickup deadline: '
-                    '${_formatDateTime(pickupDeadline)}',
-                  ),
-                ],
-              ),
-            ),
-            if (isExpired)
-              Padding(
-                padding: const EdgeInsets.only(top: 12),
-                child: Text(
-                  'This donation cannot be claimed because '
-                  'its Food Rescue Window has closed.',
-                  style: TextStyle(
-                    color: Colors.red.shade700,
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildDonationPassportCard({
-    required String donationId,
-    required String donorId,
-    required String foodCategory,
-    required int quantity,
-    required String storageMethod,
-    required String packagingState,
-    required String allergens,
-    required DateTime preparedAt,
-    required DateTime postedAt,
-    required DateTime pickupDeadline,
-    required String eligibilityStatus,
-  }) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.badge_outlined,
-                  color: Color(0xFF356B4D),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  'Donation Passport',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge,
                 ),
               ],
             ),
             const SizedBox(height: 16),
-            _InfoRow(
-              icon: Icons.badge_outlined,
-              label: 'Donation ID',
-              value: donationId,
-            ),
-            _InfoRow(
-              icon: Icons.person_outline,
-              label: 'Donor ID',
-              value: donorId,
-            ),
-            _InfoRow(
-              icon: Icons.restaurant_outlined,
-              label: 'Food category',
-              value: foodCategory,
-            ),
-            _InfoRow(
-              icon: Icons.inventory_2_outlined,
-              label: 'Quantity',
-              value: '$quantity portions/packets',
-            ),
-            _InfoRow(
-              icon: Icons.kitchen_outlined,
-              label: 'Storage method',
-              value: _storageLabel(storageMethod),
-            ),
-            _InfoRow(
-              icon: Icons.inventory_outlined,
-              label: 'Packaging',
-              value: _packagingLabel(packagingState),
-            ),
-            _InfoRow(
-              icon: Icons.warning_amber_outlined,
-              label: 'Allergens',
-              value: allergens.isEmpty
-                  ? 'None declared'
-                  : allergens,
-            ),
-            _InfoRow(
-              icon: Icons.schedule_outlined,
-              label: 'Prepared at',
-              value: _formatDateTime(preparedAt),
-            ),
-            _InfoRow(
-              icon: Icons.post_add_outlined,
-              label: 'Posted at',
-              value: _formatDateTime(postedAt),
-            ),
-            _InfoRow(
-              icon: Icons.timer_outlined,
-              label: 'Pickup deadline',
-              value: _formatDateTime(pickupDeadline),
-            ),
-            _InfoRow(
-              icon: Icons.verified_outlined,
-              label: 'Eligibility',
-              value: _eligibilityLabel(
-                eligibilityStatus,
-              ),
-            ),
+            ...children,
           ],
         ),
       ),
     );
   }
 
-  Widget _buildClaimInformationCard({
-    required String status,
-    required String? claimedByNgoId,
-    required DateTime? claimedAt,
-  }) {
-    final bool isClaimed = claimedByNgoId != null;
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                const Icon(
-                  Icons.home_work_outlined,
-                  color: Color(0xFF356B4D),
-                ),
-                const SizedBox(width: 10),
-                Text(
-                  'NGO claim information',
-                  style: Theme.of(context)
-                      .textTheme
-                      .titleLarge,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            if (isClaimed) ...[
-              _InfoRow(
-                icon: Icons.badge_outlined,
-                label: 'Claimed by NGO',
-                value: claimedByNgoId,
-              ),
-              if (claimedAt != null)
-                _InfoRow(
-                  icon: Icons.event_available_outlined,
-                  label: 'Claimed at',
-                  value: _formatDateTime(claimedAt),
-                ),
-              _InfoRow(
-                icon: Icons.local_shipping_outlined,
-                label: 'Volunteer status',
-                value: _volunteerStatusLabel(
-                  status,
-                ),
-              ),
-            ] else
-              const Text(
-                'This donation has not been claimed yet.',
-              ),
-          ],
+  Widget _notice(String message) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 12),
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.grey.shade200,
+          borderRadius: BorderRadius.circular(12),
         ),
-      ),
-    );
-  }
-
-  String _volunteerStatusLabel(String status) {
-    switch (status) {
-      case 'claimed':
-        return 'Waiting for volunteer assignment';
-      case 'volunteer_assigned':
-        return 'Volunteer assigned';
-      case 'picked_up':
-        return 'Picked up by volunteer';
-      case 'delivered':
-        return 'Delivered to NGO';
-      case 'accepted':
-        return 'Accepted by NGO';
-      case 'rejected':
-        return 'Rejected by NGO';
-      default:
-        return status;
-    }
-  }
-
-  Widget _buildStatusNotice({
-    required String status,
-    required bool isExpired,
-  }) {
-    String message;
-
-    if (isExpired) {
-      message =
-          'The Food Rescue Window has closed, so this donation cannot be claimed.';
-    } else {
-      message =
-          'This donation is currently ${_statusLabel(status).toLowerCase()}.';
-    }
-
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.grey.shade200,
-        borderRadius: BorderRadius.circular(12),
-      ),
-      child: Text(
-        message,
-        textAlign: TextAlign.center,
-        style: const TextStyle(
-          fontWeight: FontWeight.w600,
-        ),
+        child: Text(message),
       ),
     );
   }
 }
 
 class _InfoRow extends StatelessWidget {
-  final IconData icon;
   final String label;
   final String value;
 
   const _InfoRow({
-    required this.icon,
     required this.label,
     required this.value,
   });
@@ -827,32 +888,18 @@ class _InfoRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 12),
-      child: Row(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            icon,
-            size: 20,
-            color: Colors.grey.shade700,
+          Text(
+            label,
+            style: TextStyle(color: Colors.grey.shade700),
           ),
-          const SizedBox(width: 10),
-          SizedBox(
-            width: 115,
-            child: Text(
-              label,
-              style: TextStyle(
-                color: Colors.grey.shade700,
-              ),
-            ),
-          ),
-          Expanded(
-            child: Text(
-              value,
-              style: const TextStyle(
-                fontWeight: FontWeight.w600,
-              ),
-            ),
+          const SizedBox(height: 4),
+          SelectableText(
+            value,
+            style: const TextStyle(fontWeight: FontWeight.w600),
           ),
         ],
       ),
