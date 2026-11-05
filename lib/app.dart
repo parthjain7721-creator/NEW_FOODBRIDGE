@@ -22,22 +22,32 @@ class AppStartupScreen extends StatefulWidget {
   const AppStartupScreen({super.key});
 
   @override
-  State<AppStartupScreen> createState() => _AppStartupScreenState();
+  State<AppStartupScreen> createState() =>
+      _AppStartupScreenState();
 }
 
-class _AppStartupScreenState extends State<AppStartupScreen> {
+class _AppStartupScreenState
+    extends State<AppStartupScreen> {
   bool _showAuthGate = false;
 
   @override
   void initState() {
     super.initState();
 
-    Future<void>.delayed(const Duration(seconds: 2), () {
-      if (!mounted) return;
+    _openAuthGate();
+  }
 
-      setState(() {
-        _showAuthGate = true;
-      });
+  Future<void> _openAuthGate() async {
+    await Future<void>.delayed(
+      const Duration(seconds: 2),
+    );
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _showAuthGate = true;
     });
   }
 

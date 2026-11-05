@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'donation_details_screen.dart';
 import 'ngo_claimed_donations_screen.dart';
 
 class NgoDashboardScreen extends StatefulWidget {
@@ -147,6 +148,17 @@ class _NgoDashboardScreenState
       MaterialPageRoute<void>(
         builder: (_) =>
             const NgoClaimedDonationsScreen(),
+      ),
+    );
+  }
+
+  void _openDonationDetails(String donationId) {
+    Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => DonationDetailsScreen(
+          donationId: donationId,
+        ),
       ),
     );
   }
@@ -489,6 +501,22 @@ class _NgoDashboardScreenState
               ),
             ),
             const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: () =>
+                    _openDonationDetails(
+                  document.id,
+                ),
+                icon: const Icon(
+                  Icons.visibility_outlined,
+                ),
+                label: const Text(
+                  'View donation details',
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
               child: ElevatedButton.icon(
