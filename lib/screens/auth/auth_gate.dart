@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../donor/donor_dashboard_screen.dart';
 import '../ngo/ngo_dashboard_screen.dart';
+import '../volunteer/volunteer_dashboard_screen.dart';
 import 'login_screen.dart';
 
 class AuthGate extends StatefulWidget {
@@ -72,12 +73,12 @@ class UserProfileLoader extends StatefulWidget {
 }
 
 class _UserProfileLoaderState extends State<UserProfileLoader> {
-  late Stream<DocumentSnapshot<Map<String, dynamic>>>
-      _profileStream;
+  late Stream<DocumentSnapshot<Map<String, dynamic>>> _profileStream;
 
   @override
   void initState() {
     super.initState();
+
     _connectProfile();
   }
 
@@ -134,8 +135,7 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
 
   @override
   Widget build(BuildContext context) {
-    return StreamBuilder<
-        DocumentSnapshot<Map<String, dynamic>>>(
+    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
       stream: _profileStream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -187,8 +187,9 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
 
         final Object? rawRole = data['role'];
 
-        final String role =
-            rawRole is String ? rawRole.trim().toLowerCase() : '';
+        final String role = rawRole is String
+            ? rawRole.trim().toLowerCase()
+            : '';
 
         if (role.isEmpty) {
           return _DiagnosticScreen(
@@ -218,7 +219,7 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
             return const NgoDashboardScreen();
 
           case 'volunteer':
-            return const _VolunteerPlaceholderScreen();
+            return const VolunteerDashboardScreen();
 
           default:
             return _DiagnosticScreen(
@@ -253,6 +254,7 @@ Future<void> _signOut(BuildContext context) async {
       ..showSnackBar(
         const SnackBar(
           content: Text('Unable to sign out. Please try again.'),
+          behavior: SnackBarBehavior.floating,
         ),
       );
   }
@@ -311,52 +313,6 @@ class _DiagnosticScreen extends StatelessWidget {
                 onPressed: () => _signOut(context),
                 icon: const Icon(Icons.logout),
                 label: const Text('Return to login'),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _VolunteerPlaceholderScreen extends StatelessWidget {
-  const _VolunteerPlaceholderScreen();
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Volunteer Dashboard'),
-        actions: [
-          IconButton(
-            tooltip: 'Logout',
-            onPressed: () => _signOut(context),
-            icon: const Icon(Icons.logout),
-          ),
-        ],
-      ),
-      body: const Center(
-        child: Padding(
-          padding: EdgeInsets.all(24),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Icon(
-                Icons.delivery_dining_outlined,
-                size: 80,
-                color: Color(0xFF356B4D),
-              ),
-              SizedBox(height: 20),
-              Text(
-                'Your volunteer account is ready.',
-                textAlign: TextAlign.center,
-              ),
-              SizedBox(height: 8),
-              Text(
-                'Pickup assignments and delivery verification '
-                'will be added in the volunteer module.',
-                textAlign: TextAlign.center,
               ),
             ],
           ),
