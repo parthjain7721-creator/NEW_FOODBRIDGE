@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'donation_qr_scan_screen.dart';
+
 class VolunteerTaskDetailsScreen extends StatefulWidget {
   final String donationId;
 
@@ -23,6 +25,8 @@ class _VolunteerTaskDetailsScreenState
 
   Timer? _timer;
   DateTime _now = DateTime.now();
+
+  bool _isScannerOpen = false;
 
   @override
   void initState() {
@@ -45,7 +49,9 @@ class _VolunteerTaskDetailsScreenState
   }
 
   @override
-  void didUpdateWidget(covariant VolunteerTaskDetailsScreen oldWidget) {
+  void didUpdateWidget(
+    covariant VolunteerTaskDetailsScreen oldWidget,
+  ) {
     super.didUpdateWidget(oldWidget);
 
     if (oldWidget.donationId != widget.donationId) {
@@ -72,6 +78,92 @@ class _VolunteerTaskDetailsScreenState
     });
   }
 
+  Future<void> _scanPassport() async {
+    if (_isScannerOpen) {
+      return;
+    }
+
+    final String? volunteerId =
+        FirebaseAuth.instance.currentUser?.uid;
+
+    if (volunteerId == null) {
+      _showSnackBar(
+        'Your session has ended. Please log in again.',
+        isError: true,
+      );
+      return;
+    }
+
+    final String donationId = widget.donationId;
+
+    setState(() {
+      _isScannerOpen = true;
+    });
+
+    try {
+      final bool? verified = await Navigator.of(context).push<bool>(
+        MaterialPageRoute<bool>(
+          builder: (_) => DonationQrScanScreen(
+            donationId: donationId,
+          ),
+        ),
+      );
+
+      if (!mounted || verified != true) {
+        return;
+      }
+
+      if (FirebaseAuth.instance.currentUser?.uid != volunteerId ||
+          widget.donationId != donationId) {
+        _showSnackBar(
+          'The account or task changed. Please verify the passport again.',
+          isError: true,
+        );
+        return;
+      }
+
+      _showSnackBar(
+        'Donation Passport matched the assigned task. '
+        'Packaging inspection and pickup evidence are still required.',
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Unable to open QR scanner: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) {
+        return;
+      }
+
+      _showSnackBar(
+        'Unable to open the scanner. Please try again.',
+        isError: true,
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isScannerOpen = false;
+        });
+      }
+    }
+  }
+
+  void _showSnackBar(
+    String message, {
+    bool isError = false,
+  }) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor:
+              isError ? Colors.red.shade700 : Colors.green.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 5),
+        ),
+      );
+  }
+
   String _text(dynamic value, String fallback) {
     return value is String && value.trim().isNotEmpty
         ? value.trim()
@@ -89,7 +181,9 @@ class _VolunteerTaskDetailsScreenState
 
     final DateTime local = value.toLocal();
 
-    String two(int number) => number.toString().padLeft(2, '0');
+    String two(int number) {
+      return number.toString().padLeft(2, '0');
+    }
 
     return '${two(local.day)}/${two(local.month)}/${local.year} '
         '${two(local.hour)}:${two(local.minute)}';
@@ -168,6 +262,24 @@ class _VolunteerTaskDetailsScreenState
     final int seconds = remaining.inSeconds.remainder(60);
 
     return '${hours}h ${minutes}m ${seconds}s remaining';
+  }
+
+  Color _windowColor(DateTime? deadline) {
+    if (deadline == null) {
+      return Colors.grey.shade700;
+    }
+
+    final Duration remaining = deadline.difference(_now);
+
+    if (remaining <= Duration.zero) {
+      return Colors.red.shade700;
+    }
+
+    if (remaining <= const Duration(minutes: 30)) {
+      return Colors.orange.shade900;
+    }
+
+    return Colors.green.shade700;
   }
 
   Widget _notice(String message, Color color) {
@@ -268,7 +380,7 @@ class _VolunteerTaskDetailsScreenState
                           ),
                           const SizedBox(height: 16),
                           ElevatedButton.icon(
-                            onPressed: _retry,
+                            onPressed: _isScannerOpen ? null : _retry,
                             icon: const Icon(Icons.refresh),
                             label: const Text('Try again'),
                           ),
@@ -297,7 +409,10 @@ class _VolunteerTaskDetailsScreenState
                   );
                 }
 
-                final String status = _text(data['status'], 'unknown');
+                final String status = _text(
+                  data['status'],
+                  'unknown',
+                );
 
                 final DateTime? deadline = _date(
                   data['pickupDeadline'],
@@ -310,17 +425,28 @@ class _VolunteerTaskDetailsScreenState
                 final bool awaitingPickup =
                     status == 'volunteer_assigned';
 
+                final bool assignmentActive =
+                    data['volunteerAssignmentStatus'] == 'assigned';
+
                 final bool windowOpen =
                     deadline != null && deadline.isAfter(_now);
 
                 final bool confirmationsComplete =
                     data['ngoPickupConfirmed'] == true &&
                     data['ngoCapacityConfirmed'] == true &&
+                    data['ngoDetailsReviewed'] == true &&
                     data['donorPickupConfirmed'] == true;
 
                 final bool ordinarilyEligible =
                     data['eligibilityStatus'] == 'eligible' ||
                     data['eligibilityStatus'] == 'urgent';
+
+                final bool canScan =
+                    awaitingPickup &&
+                    assignmentActive &&
+                    windowOpen &&
+                    confirmationsComplete &&
+                    ordinarilyEligible;
 
                 return ListView(
                   padding: const EdgeInsets.all(16),
@@ -332,7 +458,9 @@ class _VolunteerTaskDetailsScreenState
                         _field('Task status', _statusLabel(status)),
                         _field(
                           'Assigned at',
-                          _formatDate(_date(data['volunteerAssignedAt'])),
+                          _formatDate(
+                            _date(data['volunteerAssignedAt']),
+                          ),
                         ),
                       ],
                     ),
@@ -340,9 +468,7 @@ class _VolunteerTaskDetailsScreenState
                     if (awaitingPickup) ...[
                       _notice(
                         _remaining(deadline),
-                        windowOpen
-                            ? Colors.green.shade700
-                            : Colors.red.shade700,
+                        _windowColor(deadline),
                       ),
                       if (!windowOpen)
                         _notice(
@@ -356,13 +482,19 @@ class _VolunteerTaskDetailsScreenState
                           'are incomplete. Do not proceed with collection.',
                           Colors.red.shade700,
                         ),
+                      if (!assignmentActive)
+                        _notice(
+                          'The volunteer assignment is not active. '
+                          'Do not proceed with collection.',
+                          Colors.red.shade700,
+                        ),
                       if (plannedPickup != null &&
                           !plannedPickup.isAfter(_now) &&
                           windowOpen)
                         _notice(
                           'The planned pickup time has been reached '
                           'or passed. Coordinate with the donor and NGO. '
-                          'The deadline has not been extended.',
+                          'The pickup deadline has not been extended.',
                           Colors.orange.shade900,
                         ),
                     ],
@@ -392,7 +524,10 @@ class _VolunteerTaskDetailsScreenState
                     _section(
                       'Donation Passport',
                       [
-                        _field('Quantity', _quantity(data['quantity'])),
+                        _field(
+                          'Quantity',
+                          _quantity(data['quantity']),
+                        ),
                         _field(
                           'Prepared at',
                           _formatDate(_date(data['preparedAt'])),
@@ -429,6 +564,12 @@ class _VolunteerTaskDetailsScreenState
                               : 'Not confirmed',
                         ),
                         _field(
+                          'NGO details review',
+                          data['ngoDetailsReviewed'] == true
+                              ? 'Confirmed'
+                              : 'Not confirmed',
+                        ),
+                        _field(
                           'NGO pickup plan',
                           data['ngoPickupConfirmed'] == true
                               ? 'Confirmed'
@@ -455,15 +596,46 @@ class _VolunteerTaskDetailsScreenState
                       ],
                     ),
 
+                    if (awaitingPickup)
+                      _section(
+                        'Donation Passport QR verification',
+                        [
+                          const Text(
+                            'Scan the donor’s passport to check that '
+                            'the donation matches your assigned task. '
+                            'The scanner also checks the current '
+                            'assignment and pickup window.',
+                          ),
+                          const SizedBox(height: 16),
+                          ElevatedButton.icon(
+                            onPressed: canScan && !_isScannerOpen
+                                ? _scanPassport
+                                : null,
+                            icon: const Icon(Icons.qr_code_scanner),
+                            label: Text(
+                              _isScannerOpen
+                                  ? 'Scanner open...'
+                                  : 'Scan Donation Passport',
+                            ),
+                          ),
+                          const SizedBox(height: 12),
+                          const Text(
+                            'A successful match is a session-level '
+                            'identity check. It does not save pickup '
+                            'completion or authorize collection '
+                            'without inspection.',
+                          ),
+                        ],
+                      ),
+
                     _section(
-                      'Pickup verification — next module',
+                      'Remaining pickup verification',
                       [
                         const Text(
-                          'Before pickup completion is enabled, '
-                          'FoodBridge will require:\n\n'
-                          '1. Donation Passport QR verification.\n'
-                          '2. Packaging-condition inspection.\n'
-                          '3. Timestamped pickup photo evidence.\n\n'
+                          'The next module will add:\n\n'
+                          '1. Packaging-condition inspection.\n'
+                          '2. Timestamped pickup photo evidence.\n'
+                          '3. A restricted pickup-completion action.\n\n'
                           'This screen does not mark the food as '
                           'picked up or delivered.',
                         ),
