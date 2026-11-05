@@ -2,40 +2,57 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import '../auth/login_screen.dart';
 import '../donor/donor_dashboard_screen.dart';
 import '../ngo/ngo_dashboard_screen.dart';
+import 'login_screen.dart';
 
-class AuthGate extends StatelessWidget {
+class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
+
+  @override
+  State<AuthGate> createState() => _AuthGateState();
+}
+
+class _AuthGateState extends State<AuthGate> {
+  late final Stream<User?> _authStream;
+
+  @override
+  void initState() {
+    super.initState();
+
+    _authStream = FirebaseAuth.instance.authStateChanges();
+  }
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<User?>(
-      stream: FirebaseAuth.instance.authStateChanges(),
-      builder: (context, authSnapshot) {
-        if (authSnapshot.connectionState ==
-            ConnectionState.waiting) {
+      stream: _authStream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _DiagnosticScreen(
+            title: 'Authentication error',
+            details:
+                'Unable to check your login session.\n\n'
+                '${snapshot.error}',
+          );
+        }
+
+        if (snapshot.connectionState == ConnectionState.waiting) {
           return const _LoadingScreen(
             message: 'Checking your account...',
           );
         }
 
-        if (authSnapshot.hasError) {
-          return _DiagnosticScreen(
-            title: 'Authentication error',
-            details:
-                'authStateChanges error:\n\n${authSnapshot.error}',
-          );
-        }
-
-        final User? user = authSnapshot.data;
+        final User? user = snapshot.data;
 
         if (user == null) {
           return const LoginScreen();
         }
 
-        return UserProfileLoader(user: user);
+        return UserProfileLoader(
+          key: ValueKey<String>(user.uid),
+          user: user,
+        );
       },
     );
   }
@@ -54,100 +71,142 @@ class UserProfileLoader extends StatefulWidget {
       _UserProfileLoaderState();
 }
 
-class _UserProfileLoaderState
-    extends State<UserProfileLoader> {
-  late Future<
-      DocumentSnapshot<Map<String, dynamic>>> _profileFuture;
+class _UserProfileLoaderState extends State<UserProfileLoader> {
+  late Stream<DocumentSnapshot<Map<String, dynamic>>>
+      _profileStream;
 
   @override
   void initState() {
     super.initState();
-    _loadProfile();
+    _connectProfile();
   }
 
-  void _loadProfile() {
+  @override
+  void didUpdateWidget(covariant UserProfileLoader oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.user.uid != widget.user.uid) {
+      _connectProfile();
+    }
+  }
+
+  void _connectProfile() {
     debugPrint(
-      'AuthGate loading profile for UID: '
-      '${widget.user.uid}',
+      'AuthGate: listening to users/${widget.user.uid}',
     );
 
-    _profileFuture = FirebaseFirestore.instance
+    _profileStream = FirebaseFirestore.instance
         .collection('users')
         .doc(widget.user.uid)
-        .get();
+        .snapshots();
   }
 
   void _retry() {
     setState(() {
-      _loadProfile();
+      _connectProfile();
     });
+  }
+
+  String _profileErrorMessage(Object? error) {
+    if (error is FirebaseException) {
+      switch (error.code) {
+        case 'permission-denied':
+          return 'Your login succeeded, but Firestore denied access '
+              'to your profile.\n\n'
+              'Check the deployed users/{uid} security rules.\n\n'
+              'Error code: ${error.code}';
+
+        case 'unavailable':
+          return 'Your login succeeded, but Firestore is currently '
+              'unavailable. Check your Internet connection.\n\n'
+              'Error code: ${error.code}';
+
+        default:
+          return 'Your login succeeded, but your profile could not '
+              'be loaded.\n\n'
+              'Error code: ${error.code}\n'
+              '${error.message ?? ''}';
+      }
+    }
+
+    return 'Your profile could not be loaded.\n\n$error';
   }
 
   @override
   Widget build(BuildContext context) {
-    return FutureBuilder<
+    return StreamBuilder<
         DocumentSnapshot<Map<String, dynamic>>>(
-      future: _profileFuture,
-      builder: (context, profileSnapshot) {
-        if (profileSnapshot.connectionState ==
-            ConnectionState.waiting) {
+      stream: _profileStream,
+      builder: (context, snapshot) {
+        if (snapshot.hasError) {
+          return _DiagnosticScreen(
+            title: 'Unable to load profile',
+            details:
+                '${_profileErrorMessage(snapshot.error)}\n\n'
+                'Profile path:\nusers/${widget.user.uid}',
+            onRetry: _retry,
+          );
+        }
+
+        if (!snapshot.hasData) {
           return const _LoadingScreen(
             message: 'Loading your FoodBridge profile...',
           );
         }
 
-        if (profileSnapshot.hasError) {
+        final DocumentSnapshot<Map<String, dynamic>> document =
+            snapshot.data!;
+
+        if (!document.exists) {
           return _DiagnosticScreen(
-            title: 'Firestore profile error',
+            title: 'Profile not available yet',
             details:
-                'User UID: ${widget.user.uid}\n\n'
-                'Expected document:\n'
-                'users/${widget.user.uid}\n\n'
-                'Error:\n${profileSnapshot.error}',
+                'Your login account exists, but its FoodBridge '
+                'profile is not available.\n\n'
+                'If registration is still saving the profile, '
+                'this screen will update automatically.\n\n'
+                'If registration already failed, complete profile '
+                'recovery for this existing account instead of '
+                'creating the same account again.\n\n'
+                'Profile path:\nusers/${widget.user.uid}',
             onRetry: _retry,
           );
         }
 
-        final document = profileSnapshot.data;
-
-        if (document == null || !document.exists) {
-          return _DiagnosticScreen(
-            title: 'Profile not found',
-            details:
-                'Firebase login succeeded.\n\n'
-                'User UID: ${widget.user.uid}\n\n'
-                'But this Firestore document does not exist:\n\n'
-                'users/${widget.user.uid}\n\n'
-                'Create this document manually or register again.',
-            onRetry: _retry,
-          );
-        }
-
-        final data = document.data();
+        final Map<String, dynamic>? data = document.data();
 
         if (data == null) {
           return _DiagnosticScreen(
             title: 'Empty profile',
             details:
-                'The Firestore document exists but contains no data.',
+                'Your profile document exists but contains no data.\n\n'
+                'Profile path:\nusers/${widget.user.uid}',
             onRetry: _retry,
           );
         }
 
-        final role =
-            (data['role'] as String? ?? '')
-                .trim()
-                .toLowerCase();
+        final Object? rawRole = data['role'];
 
-        debugPrint('Loaded role: $role');
+        final String role =
+            rawRole is String ? rawRole.trim().toLowerCase() : '';
 
         if (role.isEmpty) {
           return _DiagnosticScreen(
-            title: 'Role missing',
+            title: 'Account role missing',
             details:
-                'The profile exists, but the role field is missing.\n\n'
-                'Add: role = ngo',
+                'Your profile needs a valid string role:\n\n'
+                'donor, ngo, or volunteer\n\n'
+                'Profile path:\nusers/${widget.user.uid}',
             onRetry: _retry,
+          );
+        }
+
+        if (data['isActive'] == false) {
+          return const _DiagnosticScreen(
+            title: 'Account inactive',
+            details:
+                'Your FoodBridge profile is marked inactive. '
+                'Contact the project administrator.',
           );
         }
 
@@ -158,20 +217,44 @@ class _UserProfileLoaderState
           case 'ngo':
             return const NgoDashboardScreen();
 
+          case 'volunteer':
+            return const _VolunteerPlaceholderScreen();
+
           default:
             return _DiagnosticScreen(
-              title: 'Invalid role',
+              title: 'Unsupported account role',
               details:
-                  'The profile role is "$role".\n\n'
-                  'Allowed values are:\n'
+                  'The profile contains an unsupported role: "$role".\n\n'
+                  'Supported roles:\n'
                   'donor\n'
                   'ngo\n'
-                  'volunteer',
+                  'volunteer\n\n'
+                  'Profile path:\nusers/${widget.user.uid}',
               onRetry: _retry,
             );
         }
       },
     );
+  }
+}
+
+Future<void> _signOut(BuildContext context) async {
+  try {
+    await FirebaseAuth.instance.signOut();
+  } catch (error) {
+    debugPrint('Sign-out failed: $error');
+
+    if (!context.mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        const SnackBar(
+          content: Text('Unable to sign out. Please try again.'),
+        ),
+      );
   }
 }
 
@@ -194,9 +277,7 @@ class _DiagnosticScreen extends StatelessWidget {
         actions: [
           IconButton(
             tooltip: 'Logout',
-            onPressed: () async {
-              await FirebaseAuth.instance.signOut();
-            },
+            onPressed: () => _signOut(context),
             icon: const Icon(Icons.logout),
           ),
         ],
@@ -205,18 +286,78 @@ class _DiagnosticScreen extends StatelessWidget {
         child: SingleChildScrollView(
           padding: const EdgeInsets.all(24),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
+              const Icon(
+                Icons.info_outline,
+                size: 64,
+                color: Colors.orange,
+              ),
+              const SizedBox(height: 20),
+              SelectableText(
                 details,
                 textAlign: TextAlign.center,
               ),
-              const SizedBox(height: 24),
-              if (onRetry != null)
+              if (onRetry != null) ...[
+                const SizedBox(height: 24),
                 ElevatedButton.icon(
                   onPressed: onRetry,
                   icon: const Icon(Icons.refresh),
                   label: const Text('Try again'),
                 ),
+              ],
+              const SizedBox(height: 12),
+              OutlinedButton.icon(
+                onPressed: () => _signOut(context),
+                icon: const Icon(Icons.logout),
+                label: const Text('Return to login'),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VolunteerPlaceholderScreen extends StatelessWidget {
+  const _VolunteerPlaceholderScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Volunteer Dashboard'),
+        actions: [
+          IconButton(
+            tooltip: 'Logout',
+            onPressed: () => _signOut(context),
+            icon: const Icon(Icons.logout),
+          ),
+        ],
+      ),
+      body: const Center(
+        child: Padding(
+          padding: EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                Icons.delivery_dining_outlined,
+                size: 80,
+                color: Color(0xFF356B4D),
+              ),
+              SizedBox(height: 20),
+              Text(
+                'Your volunteer account is ready.',
+                textAlign: TextAlign.center,
+              ),
+              SizedBox(height: 8),
+              Text(
+                'Pickup assignments and delivery verification '
+                'will be added in the volunteer module.',
+                textAlign: TextAlign.center,
+              ),
             ],
           ),
         ),
@@ -236,13 +377,19 @@ class _LoadingScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 20),
-            Text(message),
-          ],
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 20),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
         ),
       ),
     );

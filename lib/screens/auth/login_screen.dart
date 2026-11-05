@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/auth_service.dart';
+import 'auth_gate.dart';
 import 'register_screen.dart';
 
 class LoginScreen extends StatefulWidget {
@@ -15,11 +16,16 @@ class _LoginScreenState extends State<LoginScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
   final AuthService _authService = AuthService();
 
-  final TextEditingController _emailController = TextEditingController();
-  final TextEditingController _passwordController = TextEditingController();
+  final TextEditingController _emailController =
+      TextEditingController();
+  final TextEditingController _passwordController =
+      TextEditingController();
 
   bool _obscurePassword = true;
   bool _isLoading = false;
+  bool _isResettingPassword = false;
+
+  bool get _isBusy => _isLoading || _isResettingPassword;
 
   @override
   void dispose() {
@@ -28,12 +34,33 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  String? _validateEmail(String? value) {
+    final String email = value?.trim() ?? '';
+
+    if (email.isEmpty) {
+      return 'Enter your email address';
+    }
+
+    if (!email.contains('@') || !email.contains('.')) {
+      return 'Enter a valid email address';
+    }
+
+    return null;
+  }
+
   Future<void> _login() async {
-    if (!_formKey.currentState!.validate()) {
+    if (_isBusy) {
+      return;
+    }
+
+    if (!(_formKey.currentState?.validate() ?? false)) {
       return;
     }
 
     FocusScope.of(context).unfocus();
+
+    final String email = _emailController.text.trim();
+    final String password = _passwordController.text;
 
     setState(() {
       _isLoading = true;
@@ -41,21 +68,42 @@ class _LoginScreenState extends State<LoginScreen> {
 
     try {
       await _authService.login(
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
+        email: email,
+        password: password,
       );
+
+      final User? user = FirebaseAuth.instance.currentUser;
+
+      if (user == null) {
+        throw FirebaseAuthException(
+          code: 'missing-auth-session',
+          message: 'Login completed without an active user session.',
+        );
+      }
+
+      debugPrint('Login succeeded. UID: ${user.uid}');
 
       if (!mounted) {
         return;
       }
 
-      // Do not navigate here.
-      // AuthGate listens to FirebaseAuth.instance.authStateChanges()
-      // and will automatically open the correct dashboard.
-    } on FirebaseAuthException catch (error) {
-      debugPrint(
-        'Firebase Auth error: ${error.code} - ${error.message}',
+      ScaffoldMessenger.of(context).hideCurrentSnackBar();
+
+      // Open a fresh AuthGate and remove old authentication routes.
+      // AuthGate reads the profile and chooses the role dashboard.
+      Navigator.of(context, rootNavigator: true)
+          .pushAndRemoveUntil<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => const AuthGate(),
+        ),
+        (route) => false,
       );
+    } on FirebaseAuthException catch (error, stackTrace) {
+      debugPrint(
+        'Firebase login error: '
+        '${error.code} - ${error.message}',
+      );
+      debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
         return;
@@ -65,15 +113,16 @@ class _LoginScreenState extends State<LoginScreen> {
         message: '${_getAuthErrorMessage(error.code)} (${error.code})',
         backgroundColor: Colors.red.shade700,
       );
-    } catch (error) {
+    } catch (error, stackTrace) {
       debugPrint('Unexpected login error: $error');
+      debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
         return;
       }
 
       _showMessage(
-        message: 'Login error: $error',
+        message: 'Unable to finish login. Please try again.',
         backgroundColor: Colors.red.shade700,
       );
     } finally {
@@ -86,15 +135,25 @@ class _LoginScreenState extends State<LoginScreen> {
   }
 
   Future<void> _resetPassword() async {
+    if (_isBusy) {
+      return;
+    }
+
     final String email = _emailController.text.trim();
 
-    if (email.isEmpty || !email.contains('@') || !email.contains('.')) {
+    if (_validateEmail(email) != null) {
       _showMessage(
         message: 'Enter a valid email address first.',
         backgroundColor: Colors.orange.shade800,
       );
       return;
     }
+
+    FocusScope.of(context).unfocus();
+
+    setState(() {
+      _isResettingPassword = true;
+    });
 
     try {
       await _authService.sendPasswordResetEmail(email);
@@ -104,13 +163,17 @@ class _LoginScreenState extends State<LoginScreen> {
       }
 
       _showMessage(
-        message: 'Password reset email sent.',
+        message:
+            'If an account exists for this email, '
+            'you should receive password reset instructions.',
         backgroundColor: Colors.green.shade700,
       );
-    } on FirebaseAuthException catch (error) {
+    } on FirebaseAuthException catch (error, stackTrace) {
       debugPrint(
-        'Password reset error: ${error.code} - ${error.message}',
+        'Password reset error: '
+        '${error.code} - ${error.message}',
       );
+      debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
         return;
@@ -120,17 +183,24 @@ class _LoginScreenState extends State<LoginScreen> {
         message: '${_getAuthErrorMessage(error.code)} (${error.code})',
         backgroundColor: Colors.red.shade700,
       );
-    } catch (error) {
+    } catch (error, stackTrace) {
       debugPrint('Unexpected password reset error: $error');
+      debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
         return;
       }
 
       _showMessage(
-        message: 'Unable to send password reset email.',
+        message: 'Unable to send password reset instructions.',
         backgroundColor: Colors.red.shade700,
       );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isResettingPassword = false;
+        });
+      }
     }
   }
 
@@ -153,6 +223,7 @@ class _LoginScreenState extends State<LoginScreen> {
   String _getAuthErrorMessage(String code) {
     switch (code) {
       case 'invalid-credential':
+      case 'invalid-login-credentials':
       case 'wrong-password':
       case 'user-not-found':
         return 'Invalid email or password.';
@@ -167,20 +238,20 @@ class _LoginScreenState extends State<LoginScreen> {
         return 'Too many attempts. Try again later.';
 
       case 'network-request-failed':
-        return 'Firebase could not connect to the network.';
+        return 'Unable to connect. Check your Internet connection.';
 
       case 'operation-not-allowed':
-        return 'Email/password login is not enabled in Firebase.';
+        return 'Email/password authentication is disabled in Firebase.';
 
       case 'api-key-not-valid':
       case 'invalid-api-key':
         return 'Firebase API configuration is invalid.';
 
       case 'app-not-authorized':
-        return 'This Android app is not authorized in Firebase.';
+        return 'This app is not authorized in Firebase.';
 
       case 'weak-password':
-        return 'The password is too weak.';
+        return 'The password does not meet the required policy.';
 
       case 'email-already-in-use':
         return 'This email is already registered.';
@@ -188,8 +259,11 @@ class _LoginScreenState extends State<LoginScreen> {
       case 'requires-recent-login':
         return 'Please log in again before continuing.';
 
+      case 'missing-auth-session':
+        return 'No active login session was created. Please try again.';
+
       default:
-        return 'Unable to log in. Please try again.';
+        return 'Unable to complete authentication. Please try again.';
     }
   }
 
@@ -245,8 +319,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 36),
                 TextFormField(
                   controller: _emailController,
+                  enabled: !_isBusy,
                   keyboardType: TextInputType.emailAddress,
                   textInputAction: TextInputAction.next,
+                  autocorrect: false,
+                  enableSuggestions: false,
                   autofillHints: const [
                     AutofillHints.username,
                     AutofillHints.email,
@@ -256,30 +333,21 @@ class _LoginScreenState extends State<LoginScreen> {
                     hintText: 'Enter your email',
                     prefixIcon: Icon(Icons.email_outlined),
                   ),
-                  validator: (value) {
-                    final String email = value?.trim() ?? '';
-
-                    if (email.isEmpty) {
-                      return 'Enter your email address';
-                    }
-
-                    if (!email.contains('@') || !email.contains('.')) {
-                      return 'Enter a valid email address';
-                    }
-
-                    return null;
-                  },
+                  validator: _validateEmail,
                 ),
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: _passwordController,
+                  enabled: !_isBusy,
                   obscureText: _obscurePassword,
                   textInputAction: TextInputAction.done,
+                  autocorrect: false,
+                  enableSuggestions: false,
                   autofillHints: const [
                     AutofillHints.password,
                   ],
                   onFieldSubmitted: (_) {
-                    if (!_isLoading) {
+                    if (!_isBusy) {
                       _login();
                     }
                   },
@@ -291,11 +359,13 @@ class _LoginScreenState extends State<LoginScreen> {
                       tooltip: _obscurePassword
                           ? 'Show password'
                           : 'Hide password',
-                      onPressed: () {
-                        setState(() {
-                          _obscurePassword = !_obscurePassword;
-                        });
-                      },
+                      onPressed: _isBusy
+                          ? null
+                          : () {
+                              setState(() {
+                                _obscurePassword = !_obscurePassword;
+                              });
+                            },
                       icon: Icon(
                         _obscurePassword
                             ? Icons.visibility_outlined
@@ -308,33 +378,32 @@ class _LoginScreenState extends State<LoginScreen> {
                       return 'Enter your password';
                     }
 
-                    if (value.length < 6) {
-                      return 'Password must contain at least 6 characters';
-                    }
-
                     return null;
                   },
                 ),
                 Align(
                   alignment: Alignment.centerRight,
                   child: TextButton(
-                    onPressed: _isLoading ? null : _resetPassword,
-                    child: const Text('Forgot password?'),
+                    onPressed: _isBusy ? null : _resetPassword,
+                    child: Text(
+                      _isResettingPassword
+                          ? 'Sending instructions...'
+                          : 'Forgot password?',
+                    ),
                   ),
                 ),
                 const SizedBox(height: 12),
                 SizedBox(
                   width: double.infinity,
                   child: ElevatedButton(
-                    onPressed: _isLoading ? null : _login,
+                    onPressed: _isBusy ? null : _login,
                     child: _isLoading
                         ? const SizedBox(
                             width: 23,
                             height: 23,
                             child: CircularProgressIndicator(
                               strokeWidth: 2.5,
-                              valueColor:
-                                  AlwaysStoppedAnimation<Color>(
+                              valueColor: AlwaysStoppedAnimation<Color>(
                                 Colors.white,
                               ),
                             ),
@@ -345,12 +414,11 @@ class _LoginScreenState extends State<LoginScreen> {
                 const SizedBox(height: 16),
                 Center(
                   child: TextButton(
-                    onPressed: _isLoading
+                    onPressed: _isBusy
                         ? null
                         : () {
-                            Navigator.push(
-                              context,
-                              MaterialPageRoute(
+                            Navigator.of(context).push<void>(
+                              MaterialPageRoute<void>(
                                 builder: (_) => const RegisterScreen(),
                               ),
                             );
