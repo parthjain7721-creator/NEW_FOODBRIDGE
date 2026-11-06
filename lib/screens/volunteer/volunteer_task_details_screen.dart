@@ -5,6 +5,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'donation_qr_scan_screen.dart';
+import 'pickup_inspection_screen.dart';
 
 class VolunteerTaskDetailsScreen extends StatefulWidget {
   final String donationId;
@@ -26,7 +27,7 @@ class _VolunteerTaskDetailsScreenState
   Timer? _timer;
   DateTime _now = DateTime.now();
 
-  bool _isScannerOpen = false;
+  bool _isVerificationFlowOpen = false;
 
   @override
   void initState() {
@@ -78,8 +79,78 @@ class _VolunteerTaskDetailsScreenState
     });
   }
 
-  Future<void> _scanPassport() async {
-    if (_isScannerOpen) {
+  bool _sameSession(String uid, String donationId) {
+    return FirebaseAuth.instance.currentUser?.uid == uid &&
+        widget.donationId == donationId;
+  }
+
+  Future<void> _checkCurrentTask(
+    String donationId,
+    String volunteerId,
+  ) async {
+    final DocumentSnapshot<Map<String, dynamic>> snapshot =
+        await FirebaseFirestore.instance
+            .collection('donations')
+            .doc(donationId)
+            .get(const GetOptions(source: Source.server));
+
+    if (!_sameSession(volunteerId, donationId)) {
+      throw StateError(
+        'The account or task changed. Please start verification again.',
+      );
+    }
+
+    final Map<String, dynamic>? data = snapshot.data();
+
+    if (!snapshot.exists || data == null) {
+      throw StateError('This donation no longer exists.');
+    }
+
+    if (data['assignedVolunteerId'] != volunteerId) {
+      throw StateError('This task is no longer assigned to you.');
+    }
+
+    if (data['status'] != 'volunteer_assigned' ||
+        data['volunteerAssignmentStatus'] != 'assigned') {
+      throw StateError('This task is not currently awaiting pickup.');
+    }
+
+    if (data['ngoPickupConfirmed'] != true ||
+        data['ngoCapacityConfirmed'] != true ||
+        data['ngoDetailsReviewed'] != true ||
+        data['donorPickupConfirmed'] != true) {
+      throw StateError(
+        'The required donor and NGO confirmations are incomplete.',
+      );
+    }
+
+    if (data['eligibilityStatus'] != 'eligible' &&
+        data['eligibilityStatus'] != 'urgent') {
+      throw StateError('This donation is not eligible for ordinary pickup.');
+    }
+
+    final DateTime? deadline = _date(data['pickupDeadline']);
+
+    if (deadline == null || !deadline.isAfter(DateTime.now())) {
+      throw StateError(
+        'The pickup window has closed or its deadline is missing.',
+      );
+    }
+
+    final Object? quantity = data['quantity'];
+
+    if (quantity is! num ||
+        !quantity.isFinite ||
+        quantity <= 0 ||
+        data['ngoConfirmedQuantity'] != quantity) {
+      throw StateError(
+        'The confirmed donation quantity is missing or inconsistent.',
+      );
+    }
+  }
+
+  Future<void> _startPickupInspection() async {
+    if (_isVerificationFlowOpen) {
       return;
     }
 
@@ -97,7 +168,7 @@ class _VolunteerTaskDetailsScreenState
     final String donationId = widget.donationId;
 
     setState(() {
-      _isScannerOpen = true;
+      _isVerificationFlowOpen = true;
     });
 
     try {
@@ -113,21 +184,63 @@ class _VolunteerTaskDetailsScreenState
         return;
       }
 
-      if (FirebaseAuth.instance.currentUser?.uid != volunteerId ||
-          widget.donationId != donationId) {
-        _showSnackBar(
-          'The account or task changed. Please verify the passport again.',
-          isError: true,
+      if (!_sameSession(volunteerId, donationId)) {
+        throw StateError(
+          'The account or task changed. Please scan again.',
         );
+      }
+
+      await _checkCurrentTask(donationId, volunteerId);
+
+      if (!mounted) {
         return;
       }
 
-      _showSnackBar(
-        'Donation Passport matched the assigned task. '
-        'Packaging inspection and pickup evidence are still required.',
+      final PickupInspectionDraft? draft =
+          await Navigator.of(context).push<PickupInspectionDraft>(
+        MaterialPageRoute<PickupInspectionDraft>(
+          builder: (_) => PickupInspectionScreen(
+            donationId: donationId,
+          ),
+        ),
       );
-    } catch (error, stackTrace) {
-      debugPrint('Unable to open QR scanner: $error');
+
+      if (!mounted || draft == null) {
+        return;
+      }
+
+      if (!_sameSession(volunteerId, donationId) ||
+          draft.donationId != donationId) {
+        throw StateError(
+          'The account or task changed. The draft was not submitted.',
+        );
+      }
+
+      if (draft.packagingCondition != 'sealed' &&
+          draft.packagingCondition != 'intact') {
+        throw StateError(
+          'This packaging inspection does not permit pickup to proceed.',
+        );
+      }
+
+      if (draft.localPhotoPath.trim().isEmpty) {
+        throw StateError('The inspection draft has no photo.');
+      }
+
+      // Recheck after the inspection because the task may have
+      // expired or changed while the camera screen was open.
+      await _checkCurrentTask(donationId, volunteerId);
+
+      if (!mounted) {
+        return;
+      }
+
+      await _showDraftReview(draft);
+    } on FirebaseException catch (error, stackTrace) {
+      debugPrint(
+        'Pickup verification failed: '
+        '${error.code} - ${error.message}',
+      );
       debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
@@ -135,16 +248,90 @@ class _VolunteerTaskDetailsScreenState
       }
 
       _showSnackBar(
-        'Unable to open the scanner. Please try again.',
+        'Unable to verify the current task. '
+        'Check your connection and try again. (${error.code})',
+        isError: true,
+      );
+    } on StateError catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      _showSnackBar(
+        error.message.toString(),
+        isError: true,
+      );
+    } catch (error, stackTrace) {
+      debugPrint('Pickup inspection flow failed: $error');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) {
+        return;
+      }
+
+      _showSnackBar(
+        'Unable to complete the inspection draft. Please try again.',
         isError: true,
       );
     } finally {
       if (mounted) {
         setState(() {
-          _isScannerOpen = false;
+          _isVerificationFlowOpen = false;
         });
       }
     }
+  }
+
+  Future<void> _showDraftReview(PickupInspectionDraft draft) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Inspection draft review'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              SelectableText('Donation ID: ${draft.donationId}'),
+              const SizedBox(height: 16),
+              Text(
+                'Observed packaging: '
+                '${_packagingLabel(draft.packagingCondition)}',
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Inspection notes: '
+                '${draft.notes.isEmpty ? 'None entered' : draft.notes}',
+              ),
+              const SizedBox(height: 12),
+              Text(
+                'Photo returned to app: '
+                '${_formatDate(draft.photoReturnedAt)}',
+              ),
+              const SizedBox(height: 12),
+              const Text('Photo: captured locally'),
+              const SizedBox(height: 16),
+              const Text(
+                'This draft has not been uploaded or permanently saved. '
+                'The displayed photo time comes from the device, '
+                'not a trusted server timestamp.',
+              ),
+              const SizedBox(height: 12),
+              const Text(
+                'Closing this review does not retain the draft '
+                'in the app workflow. No pickup status is changed.',
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('Close draft review'),
+          ),
+        ],
+      ),
+    );
   }
 
   void _showSnackBar(
@@ -159,7 +346,7 @@ class _VolunteerTaskDetailsScreenState
           backgroundColor:
               isError ? Colors.red.shade700 : Colors.green.shade700,
           behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 5),
+          duration: const Duration(seconds: 6),
         ),
       );
   }
@@ -220,6 +407,8 @@ class _VolunteerTaskDetailsScreenState
         return 'Damaged';
       case 'leaking':
         return 'Leaking';
+      case 'uncertain':
+        return 'Unable to assess';
       default:
         return 'Not recorded';
     }
@@ -380,7 +569,8 @@ class _VolunteerTaskDetailsScreenState
                           ),
                           const SizedBox(height: 16),
                           ElevatedButton.icon(
-                            onPressed: _isScannerOpen ? null : _retry,
+                            onPressed:
+                                _isVerificationFlowOpen ? null : _retry,
                             icon: const Icon(Icons.refresh),
                             label: const Text('Try again'),
                           ),
@@ -441,12 +631,21 @@ class _VolunteerTaskDetailsScreenState
                     data['eligibilityStatus'] == 'eligible' ||
                     data['eligibilityStatus'] == 'urgent';
 
-                final bool canScan =
+                final Object? quantity = data['quantity'];
+
+                final bool quantityConfirmed =
+                    quantity is num &&
+                    quantity.isFinite &&
+                    quantity > 0 &&
+                    data['ngoConfirmedQuantity'] == quantity;
+
+                final bool canStartInspection =
                     awaitingPickup &&
                     assignmentActive &&
                     windowOpen &&
                     confirmationsComplete &&
-                    ordinarilyEligible;
+                    ordinarilyEligible &&
+                    quantityConfirmed;
 
                 return ListView(
                   padding: const EdgeInsets.all(16),
@@ -476,10 +675,13 @@ class _VolunteerTaskDetailsScreenState
                           'window is closed or its deadline is missing.',
                           Colors.red.shade700,
                         ),
-                      if (!confirmationsComplete || !ordinarilyEligible)
+                      if (!confirmationsComplete ||
+                          !ordinarilyEligible ||
+                          !quantityConfirmed)
                         _notice(
-                          'The required confirmations or eligibility '
-                          'are incomplete. Do not proceed with collection.',
+                          'The required confirmations, eligibility, '
+                          'or quantity are incomplete. '
+                          'Do not proceed with collection.',
                           Colors.red.shade700,
                         ),
                       if (!assignmentActive)
@@ -524,10 +726,7 @@ class _VolunteerTaskDetailsScreenState
                     _section(
                       'Donation Passport',
                       [
-                        _field(
-                          'Quantity',
-                          _quantity(data['quantity']),
-                        ),
+                        _field('Quantity', _quantity(data['quantity'])),
                         _field(
                           'Prepared at',
                           _formatDate(_date(data['preparedAt'])),
@@ -576,6 +775,10 @@ class _VolunteerTaskDetailsScreenState
                               : 'Not confirmed',
                         ),
                         _field(
+                          'NGO confirmed quantity',
+                          _quantity(data['ngoConfirmedQuantity']),
+                        ),
+                        _field(
                           'Donor pickup arrangement',
                           data['donorPickupConfirmed'] == true
                               ? 'Confirmed'
@@ -598,46 +801,48 @@ class _VolunteerTaskDetailsScreenState
 
                     if (awaitingPickup)
                       _section(
-                        'Donation Passport QR verification',
+                        'QR verification and pickup inspection',
                         [
                           const Text(
-                            'Scan the donor’s passport to check that '
-                            'the donation matches your assigned task. '
-                            'The scanner also checks the current '
-                            'assignment and pickup window.',
+                            'Scan the donor’s Donation Passport first. '
+                            'After a match, record the observed packaging '
+                            'condition and take a pickup photo.',
                           ),
                           const SizedBox(height: 16),
                           ElevatedButton.icon(
-                            onPressed: canScan && !_isScannerOpen
-                                ? _scanPassport
-                                : null,
+                            onPressed:
+                                canStartInspection &&
+                                        !_isVerificationFlowOpen
+                                    ? _startPickupInspection
+                                    : null,
                             icon: const Icon(Icons.qr_code_scanner),
                             label: Text(
-                              _isScannerOpen
-                                  ? 'Scanner open...'
-                                  : 'Scan Donation Passport',
+                              _isVerificationFlowOpen
+                                  ? 'Verification in progress...'
+                                  : 'Scan QR and inspect pickup',
                             ),
                           ),
                           const SizedBox(height: 12),
                           const Text(
-                            'A successful match is a session-level '
-                            'identity check. It does not save pickup '
-                            'completion or authorize collection '
-                            'without inspection.',
+                            'Damaged, leaking, or uncertain packaging '
+                            'blocks progression in the inspection screen. '
+                            'Acceptable packaging does not prove '
+                            'that food is safe.',
                           ),
                         ],
                       ),
 
                     _section(
-                      'Remaining pickup verification',
+                      'Evidence upload — pending',
                       [
                         const Text(
-                          'The next module will add:\n\n'
-                          '1. Packaging-condition inspection.\n'
-                          '2. Timestamped pickup photo evidence.\n'
-                          '3. A restricted pickup-completion action.\n\n'
-                          'This screen does not mark the food as '
-                          'picked up or delivered.',
+                          'The inspection currently produces a local '
+                          'draft for review only.\n\n'
+                          'Photo upload, server evidence timestamps, '
+                          'and the picked-up status transition '
+                          'are not enabled yet.\n\n'
+                          'No permanent pickup record is created '
+                          'by this screen.',
                         ),
                       ],
                     ),
