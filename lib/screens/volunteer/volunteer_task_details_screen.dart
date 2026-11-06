@@ -3,9 +3,12 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 
 import 'donation_qr_scan_screen.dart';
 import 'pickup_inspection_screen.dart';
+
+import '../../services/pickup_completion_service.dart';
 
 class VolunteerTaskDetailsScreen extends StatefulWidget {
   final String donationId;
@@ -28,6 +31,9 @@ class _VolunteerTaskDetailsScreenState
   DateTime _now = DateTime.now();
 
   bool _isVerificationFlowOpen = false;
+
+  final PickupCompletionService _pickupCompletionService =
+      PickupCompletionService();
 
   @override
   void initState() {
@@ -283,54 +289,256 @@ class _VolunteerTaskDetailsScreenState
   }
 
   Future<void> _showDraftReview(PickupInspectionDraft draft) async {
-    await showDialog<void>(
+    final String? volunteerId =
+        FirebaseAuth.instance.currentUser?.uid;
+
+    if (volunteerId == null) {
+      _showSnackBar(
+        'Your session has ended. Please log in again.',
+        isError: true,
+      );
+      return;
+    }
+
+    if (draft.donationId != widget.donationId) {
+      _showSnackBar(
+        'The inspection draft does not match this task.',
+        isError: true,
+      );
+      return;
+    }
+
+    bool isSubmitting = false;
+    String? submissionError;
+
+    final bool? completed = await showDialog<bool>(
       context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Inspection draft review'),
-        content: SingleChildScrollView(
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              SelectableText('Donation ID: ${draft.donationId}'),
-              const SizedBox(height: 16),
-              Text(
-                'Observed packaging: '
-                '${_packagingLabel(draft.packagingCondition)}',
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        return StatefulBuilder(
+          builder: (dialogContext, setDialogState) {
+            Future<void> submitPickup() async {
+              if (isSubmitting) {
+                return;
+              }
+
+              if (!_sameSession(volunteerId, draft.donationId)) {
+                setDialogState(() {
+                  submissionError =
+                      'The account or task changed. '
+                      'Close this dialog and start verification again.';
+                });
+                return;
+              }
+
+              setDialogState(() {
+                isSubmitting = true;
+                submissionError = null;
+              });
+
+              String? errorMessage;
+
+              try {
+                await _pickupCompletionService.completePickup(
+                  donationId: draft.donationId,
+                  localPhotoPath: draft.localPhotoPath,
+                  packagingCondition: draft.packagingCondition,
+                  notes: draft.notes,
+                );
+
+                if (!dialogContext.mounted) {
+                  return;
+                }
+
+                Navigator.of(dialogContext).pop<bool>(true);
+                return;
+              } on FirebaseFunctionsException catch (error, stackTrace) {
+                debugPrint(
+                  'Pickup callable failed: '
+                  '${error.code} - ${error.message}',
+                );
+                debugPrintStack(stackTrace: stackTrace);
+
+                switch (error.code) {
+                  case 'unauthenticated':
+                    errorMessage =
+                        'Your session has ended. Please log in again.';
+                    break;
+
+                  case 'permission-denied':
+                    errorMessage =
+                        'Pickup completion was denied. '
+                        'Check that this task is assigned to your '
+                        'active volunteer account.';
+                    break;
+
+                  case 'failed-precondition':
+                    errorMessage = error.message ??
+                        'The pickup requirements are no longer satisfied.';
+                    break;
+
+                  case 'already-exists':
+                    errorMessage =
+                        'A pickup inspection is already recorded. '
+                        'Close this dialog and check the task status.';
+                    break;
+
+                  case 'not-found':
+                    errorMessage =
+                        'The donation or callable endpoint was not found. '
+                        'Verify that completeDonationPickup is deployed '
+                        'in us-central1.';
+                    break;
+
+                  case 'unavailable':
+                  case 'deadline-exceeded':
+                    errorMessage =
+                        'The server response was interrupted. '
+                        'Completion may already have succeeded. '
+                        'Retry this same submission or close the dialog '
+                        'and check the task status.';
+                    break;
+
+                  default:
+                    errorMessage =
+                        '${error.message ?? 'Unable to complete pickup.'} '
+                        '(${error.code})';
+                }
+              } on FirebaseException catch (error, stackTrace) {
+                debugPrint(
+                  'Pickup evidence operation failed: '
+                  '${error.plugin}/${error.code} - ${error.message}',
+                );
+                debugPrintStack(stackTrace: stackTrace);
+
+                errorMessage =
+                    'Unable to upload or verify pickup evidence. '
+                    '(${error.code})';
+              } on StateError catch (error) {
+                errorMessage = error.message.toString();
+              } catch (error, stackTrace) {
+                debugPrint('Unexpected pickup submission error: $error');
+                debugPrintStack(stackTrace: stackTrace);
+
+                errorMessage =
+                    'Unable to confirm the submission result. '
+                    'Retry this same draft or check the task status.';
+              }
+
+              if (!dialogContext.mounted) {
+                return;
+              }
+
+              setDialogState(() {
+                isSubmitting = false;
+                submissionError = errorMessage;
+              });
+            }
+
+            return PopScope(
+              canPop: !isSubmitting,
+              child: AlertDialog(
+                title: const Text('Review and complete pickup'),
+                content: SingleChildScrollView(
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      SelectableText(
+                        'Donation ID: ${draft.donationId}',
+                      ),
+                      const SizedBox(height: 16),
+                      Text(
+                        'Observed packaging: '
+                        '${_packagingLabel(draft.packagingCondition)}',
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Inspection notes: '
+                        '${draft.notes.isEmpty ? 'None entered' : draft.notes}',
+                      ),
+                      const SizedBox(height: 12),
+                      Text(
+                        'Photo returned to app: '
+                        '${_formatDate(draft.photoReturnedAt)}',
+                      ),
+                      const SizedBox(height: 12),
+                      const Text(
+                        'The displayed photo time is from your device. '
+                        'The backend records a separate server timestamp '
+                        'when it saves the pickup.',
+                      ),
+                      const SizedBox(height: 16),
+                      const Text(
+                        'Submit only when the physical handover has '
+                        'occurred and these observations describe '
+                        'the donation you collected.\n\n'
+                        'Submission uploads the photo and asks the '
+                        'backend to record this donation as picked up. '
+                        'This does not certify food safety.',
+                      ),
+                      if (submissionError != null) ...[
+                        const SizedBox(height: 16),
+                        Text(
+                          submissionError!,
+                          style: TextStyle(
+                            color: Colors.red.shade700,
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                      ],
+                      if (isSubmitting) ...[
+                        const SizedBox(height: 20),
+                        const Center(
+                          child: CircularProgressIndicator(),
+                        ),
+                        const SizedBox(height: 12),
+                        const Text(
+                          'Uploading evidence and requesting '
+                          'pickup completion. Please wait.',
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: isSubmitting
+                        ? null
+                        : () {
+                            Navigator.of(dialogContext).pop<bool>(false);
+                          },
+                    child: const Text('Close'),
+                  ),
+                  FilledButton(
+                    onPressed: isSubmitting ? null : submitPickup,
+                    child: Text(
+                      isSubmitting
+                          ? 'Submitting...'
+                          : submissionError == null
+                              ? 'Upload evidence and complete pickup'
+                              : 'Retry same submission',
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(height: 12),
-              Text(
-                'Inspection notes: '
-                '${draft.notes.isEmpty ? 'None entered' : draft.notes}',
-              ),
-              const SizedBox(height: 12),
-              Text(
-                'Photo returned to app: '
-                '${_formatDate(draft.photoReturnedAt)}',
-              ),
-              const SizedBox(height: 12),
-              const Text('Photo: captured locally'),
-              const SizedBox(height: 16),
-              const Text(
-                'This draft has not been uploaded or permanently saved. '
-                'The displayed photo time comes from the device, '
-                'not a trusted server timestamp.',
-              ),
-              const SizedBox(height: 12),
-              const Text(
-                'Closing this review does not retain the draft '
-                'in the app workflow. No pickup status is changed.',
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Close draft review'),
-          ),
-        ],
-      ),
+            );
+          },
+        );
+      },
+    );
+
+    if (!mounted || completed != true) {
+      return;
+    }
+
+    if (!_sameSession(volunteerId, draft.donationId)) {
+      return;
+    }
+
+    _showSnackBar(
+      'Pickup recorded successfully. '
+      'The task status will update from Firestore.',
     );
   }
 
@@ -647,6 +855,17 @@ class _VolunteerTaskDetailsScreenState
                     ordinarilyEligible &&
                     quantityConfirmed;
 
+                final bool pickupRecorded =
+                    status == 'picked_up' ||
+                    status == 'delivered' ||
+                    status == 'accepted';
+
+                final Map<String, dynamic>? pickupInspection =
+                    data['pickupInspection'] is Map
+                        ? data['pickupInspection']
+                            as Map<String, dynamic>
+                        : null;
+
                 return ListView(
                   padding: const EdgeInsets.all(16),
                   children: [
@@ -833,17 +1052,50 @@ class _VolunteerTaskDetailsScreenState
                       ),
 
                     _section(
-                      'Evidence upload — pending',
+                      'Pickup evidence',
                       [
-                        const Text(
-                          'The inspection currently produces a local '
-                          'draft for review only.\n\n'
-                          'Photo upload, server evidence timestamps, '
-                          'and the picked-up status transition '
-                          'are not enabled yet.\n\n'
-                          'No permanent pickup record is created '
-                          'by this screen.',
-                        ),
+                        if (pickupRecorded) ...[
+                          _field(
+                            'Pickup recorded at',
+                            _formatDate(
+                              _date(data['pickedUpAt']),
+                            ),
+                          ),
+                          if (pickupInspection != null) ...[
+                            _field(
+                              'Recorded packaging condition',
+                              _packagingLabel(
+                                pickupInspection['packagingCondition'],
+                              ),
+                            ),
+                            _field(
+                              'Inspection notes',
+                              _text(
+                                pickupInspection['notes'],
+                                'No inspection notes recorded',
+                              ),
+                            ),
+                            _field(
+                              'Evidence recorded at',
+                              _formatDate(
+                                _date(
+                                  pickupInspection['recordedAt'],
+                                ),
+                              ),
+                            ),
+                          ],
+                          const Text(
+                            'Pickup has been recorded. Delivery and final '
+                            'NGO acceptance are separate steps.',
+                          ),
+                        ] else ...[
+                          const Text(
+                            'After QR matching and inspection, review the '
+                            'draft and explicitly submit it. The photo is '
+                            'uploaded first; the backend then verifies the '
+                            'request before recording pickup.',
+                          ),
+                        ],
                       ],
                     ),
 
