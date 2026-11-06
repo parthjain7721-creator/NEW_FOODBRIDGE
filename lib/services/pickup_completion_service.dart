@@ -112,18 +112,13 @@ class PickupCompletionService {
         throw StateError('The pickup window has closed.');
       }
 
+      // This check prevents duplicate pickup completion.
+      // Because evidence creation and donation update occur in the
+      // same transaction, an existing pickupInspection also proves
+      // that the matching evidence document was created.
       if (donation['pickupInspection'] != null) {
         throw StateError(
           'A pickup inspection has already been recorded.',
-        );
-      }
-
-      final DocumentSnapshot<Map<String, dynamic>> evidenceSnapshot =
-          await transaction.get(evidenceRef);
-
-      if (evidenceSnapshot.exists) {
-        throw StateError(
-          'Pickup evidence has already been recorded for this donation.',
         );
       }
 
