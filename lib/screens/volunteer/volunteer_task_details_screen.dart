@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 
 import 'donation_qr_scan_screen.dart';
 import 'pickup_inspection_screen.dart';
@@ -233,8 +232,8 @@ class _VolunteerTaskDetailsScreenState
         throw StateError('The inspection draft has no photo.');
       }
 
-      // Recheck after the inspection because the task may have
-      // expired or changed while the camera screen was open.
+      // Recheck after inspection because the task may have changed
+      // while the camera screen was open.
       await _checkCurrentTask(donationId, volunteerId);
 
       if (!mounted) {
@@ -352,58 +351,6 @@ class _VolunteerTaskDetailsScreenState
 
                 Navigator.of(dialogContext).pop<bool>(true);
                 return;
-              } on FirebaseFunctionsException catch (error, stackTrace) {
-                debugPrint(
-                  'Pickup callable failed: '
-                  '${error.code} - ${error.message}',
-                );
-                debugPrintStack(stackTrace: stackTrace);
-
-                switch (error.code) {
-                  case 'unauthenticated':
-                    errorMessage =
-                        'Your session has ended. Please log in again.';
-                    break;
-
-                  case 'permission-denied':
-                    errorMessage =
-                        'Pickup completion was denied. '
-                        'Check that this task is assigned to your '
-                        'active volunteer account.';
-                    break;
-
-                  case 'failed-precondition':
-                    errorMessage = error.message ??
-                        'The pickup requirements are no longer satisfied.';
-                    break;
-
-                  case 'already-exists':
-                    errorMessage =
-                        'A pickup inspection is already recorded. '
-                        'Close this dialog and check the task status.';
-                    break;
-
-                  case 'not-found':
-                    errorMessage =
-                        'The donation or callable endpoint was not found. '
-                        'Verify that completeDonationPickup is deployed '
-                        'in us-central1.';
-                    break;
-
-                  case 'unavailable':
-                  case 'deadline-exceeded':
-                    errorMessage =
-                        'The server response was interrupted. '
-                        'Completion may already have succeeded. '
-                        'Retry this same submission or close the dialog '
-                        'and check the task status.';
-                    break;
-
-                  default:
-                    errorMessage =
-                        '${error.message ?? 'Unable to complete pickup.'} '
-                        '(${error.code})';
-                }
               } on FirebaseException catch (error, stackTrace) {
                 debugPrint(
                   'Pickup evidence operation failed: '
@@ -411,9 +358,20 @@ class _VolunteerTaskDetailsScreenState
                 );
                 debugPrintStack(stackTrace: stackTrace);
 
-                errorMessage =
-                    'Unable to upload or verify pickup evidence. '
-                    '(${error.code})';
+                if (error.code == 'permission-denied') {
+                  errorMessage =
+                      'Pickup completion was denied by Firestore rules. '
+                      'Confirm that the updated pickup rules are published '
+                      'and that this task is assigned to your active '
+                      'volunteer account.';
+                } else if (error.code == 'unauthenticated') {
+                  errorMessage =
+                      'Your session has ended. Please log in again.';
+                } else {
+                  errorMessage =
+                      'Unable to record pickup evidence. '
+                      '(${error.code})';
+                }
               } on StateError catch (error) {
                 errorMessage = error.message.toString();
               } catch (error, stackTrace) {
@@ -465,7 +423,7 @@ class _VolunteerTaskDetailsScreenState
                       const SizedBox(height: 12),
                       const Text(
                         'The displayed photo time is from your device. '
-                        'The backend records a separate server timestamp '
+                        'FoodBridge records a separate server timestamp '
                         'when it saves the pickup.',
                       ),
                       const SizedBox(height: 16),
@@ -473,9 +431,10 @@ class _VolunteerTaskDetailsScreenState
                         'Submit only when the physical handover has '
                         'occurred and these observations describe '
                         'the donation you collected.\n\n'
-                        'Submission uploads the photo and asks the '
-                        'backend to record this donation as picked up. '
-                        'This does not certify food safety.',
+                        'Submission records the inspection details and a '
+                        'SHA-256 fingerprint of the locally retained photo. '
+                        'The photo itself is not uploaded to Firebase '
+                        'Storage. This does not certify food safety.',
                       ),
                       if (submissionError != null) ...[
                         const SizedBox(height: 16),
@@ -494,8 +453,8 @@ class _VolunteerTaskDetailsScreenState
                         ),
                         const SizedBox(height: 12),
                         const Text(
-                          'Uploading evidence and requesting '
-                          'pickup completion. Please wait.',
+                          'Recording pickup evidence and updating '
+                          'the task status. Please wait.',
                         ),
                       ],
                     ],
@@ -516,7 +475,7 @@ class _VolunteerTaskDetailsScreenState
                       isSubmitting
                           ? 'Submitting...'
                           : submissionError == null
-                              ? 'Upload evidence and complete pickup'
+                              ? 'Record pickup'
                               : 'Retry same submission',
                     ),
                   ),
@@ -1083,6 +1042,13 @@ class _VolunteerTaskDetailsScreenState
                                 ),
                               ),
                             ),
+                            _field(
+                              'Photo storage',
+                              pickupInspection['photoStoredRemotely'] == false
+                                  ? 'Photo retained locally; SHA-256 '
+                                      'fingerprint recorded'
+                                  : 'Remote photo storage',
+                            ),
                           ],
                           const Text(
                             'Pickup has been recorded. Delivery and final '
@@ -1091,9 +1057,11 @@ class _VolunteerTaskDetailsScreenState
                         ] else ...[
                           const Text(
                             'After QR matching and inspection, review the '
-                            'draft and explicitly submit it. The photo is '
-                            'uploaded first; the backend then verifies the '
-                            'request before recording pickup.',
+                            'draft and explicitly submit it. FoodBridge '
+                            'records the inspection details and a SHA-256 '
+                            'fingerprint of the locally retained photo. '
+                            'The photo itself is not uploaded to Firebase '
+                            'Storage.',
                           ),
                         ],
                       ],

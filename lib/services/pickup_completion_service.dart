@@ -1,18 +1,12 @@
-import 'package:cloud_functions/cloud_functions.dart';
-import 'package:firebase_auth/firebase_auth.dart';
+import 'dart:io';
 
-import 'pickup_evidence_service.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:crypto/crypto.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:flutter/foundation.dart';
 
 class PickupCompletionService {
-  final PickupEvidenceService _evidenceService =
-      PickupEvidenceService();
-
-  final FirebaseFunctions _functions =
-      FirebaseFunctions.instanceFor(region: 'us-central1');
-
-  // Reuse an uploaded object when retrying this draft during
-  // the lifetime of this service instance.
-  final Map<String, PickupEvidenceUpload> _uploadedDrafts = {};
+  final FirebaseFirestore _firestore = FirebaseFirestore.instance;
 
   Future<void> completePickup({
     required String donationId,
@@ -22,8 +16,12 @@ class PickupCompletionService {
   }) async {
     final String? uid = FirebaseAuth.instance.currentUser?.uid;
 
-    if (uid == null) {
+    if (uid == null || uid.isEmpty) {
       throw StateError('Please log in again.');
+    }
+
+    if (!RegExp(r'^[A-Za-z0-9_-]{1,128}$').hasMatch(donationId)) {
+      throw StateError('A valid donation ID is required.');
     }
 
     if (packagingCondition != 'sealed' &&
@@ -34,46 +32,137 @@ class PickupCompletionService {
     }
 
     if (notes.length > 500) {
-      throw StateError('Inspection notes are too long.');
-    }
-
-    final String cacheKey = '$uid|$donationId|$localPhotoPath';
-
-    PickupEvidenceUpload? upload = _uploadedDrafts[cacheKey];
-
-    if (upload == null) {
-      upload = await _evidenceService.uploadPickupPhoto(
-        donationId: donationId,
-        localPhotoPath: localPhotoPath,
-      );
-
-      _uploadedDrafts[cacheKey] = upload;
-    }
-
-    if (FirebaseAuth.instance.currentUser?.uid != uid) {
       throw StateError(
-        'Your account changed. The pickup was not finalized.',
+        'Inspection notes must contain 500 characters or fewer.',
       );
     }
 
-    final HttpsCallable callable =
-        _functions.httpsCallable('completeDonationPickup');
+    final File photoFile = File(localPhotoPath);
 
-    final result = await callable.call({
-      'donationId': donationId,
-      'photoPath': upload.storagePath,
-      'packagingCondition': packagingCondition,
-      'notes': notes,
+    if (!await photoFile.exists()) {
+      throw StateError(
+        'The inspection photo is no longer available on this device.',
+      );
+    }
+
+    final List<int> photoBytes = await photoFile.readAsBytes();
+
+    if (photoBytes.isEmpty) {
+      throw StateError('The inspection photo is empty.');
+    }
+
+    final String photoSha256 = sha256.convert(photoBytes).toString();
+
+    final DocumentReference<Map<String, dynamic>> donationRef =
+        _firestore.collection('donations').doc(donationId);
+
+    final DocumentReference<Map<String, dynamic>> evidenceRef =
+        _firestore.collection('pickupEvidence').doc(donationId);
+
+    await _firestore.runTransaction<void>((transaction) async {
+      final DocumentSnapshot<Map<String, dynamic>> donationSnapshot =
+          await transaction.get(donationRef);
+
+      final Map<String, dynamic>? donation = donationSnapshot.data();
+
+      if (donation == null) {
+        throw StateError('This donation no longer exists.');
+      }
+
+      if (donation['assignedVolunteerId'] != uid) {
+        throw StateError('This donation is not assigned to you.');
+      }
+
+      if (donation['status'] != 'volunteer_assigned' ||
+          donation['volunteerAssignmentStatus'] != 'assigned') {
+        throw StateError('This task is not awaiting pickup.');
+      }
+
+      if (donation['ngoPickupConfirmed'] != true ||
+          donation['ngoCapacityConfirmed'] != true ||
+          donation['ngoDetailsReviewed'] != true ||
+          donation['donorPickupConfirmed'] != true) {
+        throw StateError(
+          'Required donor and NGO confirmations are incomplete.',
+        );
+      }
+
+      if (donation['eligibilityStatus'] != 'eligible' &&
+          donation['eligibilityStatus'] != 'urgent') {
+        throw StateError(
+          'This donation is not eligible for ordinary pickup.',
+        );
+      }
+
+      final Object? quantity = donation['quantity'];
+
+      if (quantity is! num ||
+          !quantity.isFinite ||
+          quantity <= 0 ||
+          donation['ngoConfirmedQuantity'] != quantity) {
+        throw StateError(
+          'The confirmed donation quantity is invalid.',
+        );
+      }
+
+      final Object? deadline = donation['pickupDeadline'];
+
+      if (deadline is! Timestamp ||
+          deadline.toDate().isBefore(DateTime.now())) {
+        throw StateError('The pickup window has closed.');
+      }
+
+      if (donation['pickupInspection'] != null) {
+        throw StateError(
+          'A pickup inspection has already been recorded.',
+        );
+      }
+
+      final DocumentSnapshot<Map<String, dynamic>> evidenceSnapshot =
+          await transaction.get(evidenceRef);
+
+      if (evidenceSnapshot.exists) {
+        throw StateError(
+          'Pickup evidence has already been recorded for this donation.',
+        );
+      }
+
+      final Map<String, dynamic> pickupInspection = {
+        'volunteerId': uid,
+        'packagingCondition': packagingCondition,
+        'notes': notes.trim(),
+        'photoCaptured': true,
+        'photoStoredRemotely': false,
+        'photoSha256': photoSha256,
+        'photoSizeBytes': photoBytes.length,
+        'recordedAt': FieldValue.serverTimestamp(),
+      };
+
+      transaction.set(evidenceRef, {
+        'donationId': donationId,
+        'volunteerId': uid,
+        'packagingCondition': packagingCondition,
+        'notes': notes.trim(),
+        'photoCaptured': true,
+        'photoStoredRemotely': false,
+        'photoSha256': photoSha256,
+        'photoSizeBytes': photoBytes.length,
+        'recordedAt': FieldValue.serverTimestamp(),
+        'createdAt': FieldValue.serverTimestamp(),
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
+
+      transaction.update(donationRef, {
+        'status': 'picked_up',
+        'pickedUpAt': FieldValue.serverTimestamp(),
+        'pickupInspection': pickupInspection,
+        'updatedAt': FieldValue.serverTimestamp(),
+      });
     });
 
-    final Object? response = result.data;
-
-    if (response is! Map ||
-        response['pickupRecorded'] != true ||
-        response['donationId'] != donationId) {
-      throw StateError(
-        'The server did not confirm pickup completion.',
-      );
-    }
+    debugPrint(
+      'Pickup evidence recorded for donation $donationId. '
+      'Photo SHA-256: $photoSha256',
+    );
   }
 }
