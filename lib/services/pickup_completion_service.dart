@@ -108,7 +108,7 @@ class PickupCompletionService {
       final Object? deadline = donation['pickupDeadline'];
 
       if (deadline is! Timestamp ||
-          deadline.toDate().isBefore(DateTime.now())) {
+          !deadline.toDate().isAfter(DateTime.now())) {
         throw StateError('The pickup window has closed.');
       }
 
