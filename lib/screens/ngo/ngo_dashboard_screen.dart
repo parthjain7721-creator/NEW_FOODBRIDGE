@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 
 import 'donation_details_screen.dart';
 import 'ngo_claimed_donations_screen.dart';
+import 'ngo_delivery_inbox_screen.dart';
 
 class NgoDashboardScreen extends StatefulWidget {
   const NgoDashboardScreen({super.key});
@@ -25,10 +26,14 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   DateTime _now = DateTime.now();
 
   String? _claimingDonationId;
+
   bool _isSigningOut = false;
+  bool _isOpeningScreen = false;
 
   bool get _isBusy =>
-      _claimingDonationId != null || _isSigningOut;
+      _claimingDonationId != null ||
+      _isSigningOut ||
+      _isOpeningScreen;
 
   @override
   void initState() {
@@ -64,10 +69,18 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   }
 
   void _retryDonations() {
+    if (_isBusy) {
+      return;
+    }
+
     setState(() {
       _now = DateTime.now();
       _connectDonations();
     });
+  }
+
+  bool _sameAccount(String uid) {
+    return mounted && _auth.currentUser?.uid == uid;
   }
 
   Future<void> _claimDonation(String donationId) async {
@@ -85,30 +98,37 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
       return;
     }
 
+    final String uid = user.uid;
+
     setState(() {
       _claimingDonationId = donationId;
     });
+
+    bool claimSucceeded = false;
 
     try {
       final DocumentReference<Map<String, dynamic>> donationRef =
           _firestore.collection('donations').doc(donationId);
 
       final DocumentReference<Map<String, dynamic>> profileRef =
-          _firestore.collection('users').doc(user.uid);
+          _firestore.collection('users').doc(uid);
 
-      await _firestore.runTransaction((transaction) async {
+      await _firestore.runTransaction<void>((transaction) async {
         // Complete all reads before writing.
         final profileSnapshot = await transaction.get(profileRef);
         final donationSnapshot = await transaction.get(donationRef);
 
+        if (_auth.currentUser?.uid != uid) {
+          throw StateError(
+            'Your account changed. Please start the claim again.',
+          );
+        }
+
         final Map<String, dynamic>? profile = profileSnapshot.data();
 
-        final String role = _readText(
-          profile?['role'],
-          '',
-        ).toLowerCase();
-
-        if (role != 'ngo' || profile?['isActive'] == false) {
+        if (profile == null ||
+            profile['role'] != 'ngo' ||
+            profile['isActive'] == false) {
           throw StateError(
             'An active NGO profile is required to claim donations.',
           );
@@ -120,7 +140,7 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           throw StateError('This donation no longer exists.');
         }
 
-        if (donation['donorId'] == user.uid) {
+        if (donation['donorId'] == uid) {
           throw StateError('You cannot claim your own donation.');
         }
 
@@ -151,9 +171,26 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           throw StateError('The Food Rescue Window has closed.');
         }
 
+        final Object? claimedByNgoId = donation['claimedByNgoId'];
+        final Object? assignedVolunteerId =
+            donation['assignedVolunteerId'];
+
+        if (claimedByNgoId != null && claimedByNgoId != '') {
+          throw StateError(
+            'This donation already has a receiving NGO.',
+          );
+        }
+
+        if (assignedVolunteerId != null &&
+            assignedVolunteerId != '') {
+          throw StateError(
+            'This donation already has an assigned volunteer.',
+          );
+        }
+
         transaction.update(donationRef, {
           'status': 'claimed',
-          'claimedByNgoId': user.uid,
+          'claimedByNgoId': uid,
           'claimedAt': FieldValue.serverTimestamp(),
           'ngoPickupConfirmed': false,
           'volunteerAssignmentStatus': 'pending',
@@ -161,56 +198,43 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
         });
       });
 
-      if (!mounted) {
-        return;
-      }
-
-      _showMessage(
-        'Donation claimed. Confirm capacity and pickup time '
-        'on the details screen.',
-        Colors.green.shade700,
-      );
-
-      _openDonationDetails(donationId);
-    } on FirebaseException catch (error, stackTrace) {
+      claimSucceeded = true;
+    } on FirebaseException catch (exception, stackTrace) {
       debugPrint(
         'NGO dashboard claim failed: '
-        '${error.code} - ${error.message}',
+        '${exception.code} - ${exception.message}',
       );
       debugPrintStack(stackTrace: stackTrace);
 
-      if (!mounted) {
-        return;
+      if (_sameAccount(uid)) {
+        _showMessage(
+          exception.code == 'permission-denied'
+              ? 'Firestore denied the claim. Check your NGO profile '
+                  'and the published security rules.'
+              : 'Unable to confirm the claim result. '
+                  'Check My claimed donations before retrying. '
+                  '(${exception.code})',
+          Colors.red.shade700,
+        );
       }
-
-      _showMessage(
-        error.code == 'permission-denied'
-            ? 'Firestore denied the claim. Check your NGO profile '
-                'and the deployed security rules.'
-            : 'Unable to claim donation. (${error.code})',
-        Colors.red.shade700,
-      );
-    } on StateError catch (error) {
-      if (!mounted) {
-        return;
+    } on StateError catch (exception) {
+      if (_sameAccount(uid)) {
+        _showMessage(
+          exception.message.toString(),
+          Colors.red.shade700,
+        );
       }
-
-      _showMessage(
-        error.message.toString(),
-        Colors.red.shade700,
-      );
-    } catch (error, stackTrace) {
-      debugPrint('Unexpected donation claim error: $error');
+    } catch (exception, stackTrace) {
+      debugPrint('Unexpected donation claim error: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
-      if (!mounted) {
-        return;
+      if (_sameAccount(uid)) {
+        _showMessage(
+          'Unable to confirm the claim result. '
+          'Check My claimed donations before retrying.',
+          Colors.red.shade700,
+        );
       }
-
-      _showMessage(
-        'Unable to claim donation. Please try again.',
-        Colors.red.shade700,
-      );
     } finally {
       if (mounted) {
         setState(() {
@@ -218,6 +242,18 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
         });
       }
     }
+
+    if (!claimSucceeded || !_sameAccount(uid)) {
+      return;
+    }
+
+    _showMessage(
+      'Donation claimed. Confirm capacity and pickup time '
+      'on the details screen.',
+      Colors.green.shade700,
+    );
+
+    await _openDonationDetails(donationId);
   }
 
   Future<void> _logout() async {
@@ -231,8 +267,10 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
 
     try {
       await _auth.signOut();
-    } catch (error, stackTrace) {
-      debugPrint('NGO logout failed: $error');
+
+      // AuthGate handles the transition back to Login.
+    } catch (exception, stackTrace) {
+      debugPrint('NGO logout failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
@@ -252,20 +290,51 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     }
   }
 
-  void _openClaimedDonations() {
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => const NgoClaimedDonationsScreen(),
-      ),
-    );
+  Future<void> _openScreen(Widget screen) async {
+    if (_isBusy) {
+      return;
+    }
+
+    if (_auth.currentUser == null) {
+      _showMessage(
+        'Your session has ended. Please log in again.',
+        Colors.red.shade700,
+      );
+      return;
+    }
+
+    setState(() {
+      _isOpeningScreen = true;
+    });
+
+    try {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => screen,
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isOpeningScreen = false;
+          _now = DateTime.now();
+        });
+      }
+    }
   }
 
-  void _openDonationDetails(String donationId) {
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => DonationDetailsScreen(
-          donationId: donationId,
-        ),
+  Future<void> _openClaimedDonations() async {
+    await _openScreen(const NgoClaimedDonationsScreen());
+  }
+
+  Future<void> _openDeliveryInbox() async {
+    await _openScreen(const NgoDeliveryInboxScreen());
+  }
+
+  Future<void> _openDonationDetails(String donationId) async {
+    await _openScreen(
+      DonationDetailsScreen(
+        donationId: donationId,
       ),
     );
   }
@@ -304,6 +373,21 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
 
   bool _ordinaryEligibility(String value) {
     return value == 'eligible' || value == 'urgent';
+  }
+
+  bool _canClaimListing(Map<String, dynamic> data) {
+    final String? uid = _auth.currentUser?.uid;
+
+    if (uid == null || data['donorId'] == uid) {
+      return false;
+    }
+
+    return _ordinaryEligibility(
+          _readText(data['eligibilityStatus'], ''),
+        ) &&
+        _windowOpen(
+          _readDateTime(data['pickupDeadline']),
+        );
   }
 
   String _formatRemainingTime(DateTime? deadline) {
@@ -412,26 +496,15 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     final Map<String, dynamic> firstData = first.data();
     final Map<String, dynamic> secondData = second.data();
 
-    final DateTime? firstDeadline = _readDateTime(
-      firstData['pickupDeadline'],
-    );
-    final DateTime? secondDeadline = _readDateTime(
-      secondData['pickupDeadline'],
-    );
+    final DateTime? firstDeadline =
+        _readDateTime(firstData['pickupDeadline']);
 
-    final bool firstClaimable =
-        _ordinaryEligibility(
-          _readText(firstData['eligibilityStatus'], ''),
-        ) &&
-        _windowOpen(firstDeadline);
+    final DateTime? secondDeadline =
+        _readDateTime(secondData['pickupDeadline']);
 
-    final bool secondClaimable =
-        _ordinaryEligibility(
-          _readText(secondData['eligibilityStatus'], ''),
-        ) &&
-        _windowOpen(secondDeadline);
+    final bool firstClaimable = _canClaimListing(firstData);
+    final bool secondClaimable = _canClaimListing(secondData);
 
-    // Show eligible, open-window donations before blocked listings.
     if (firstClaimable != secondClaimable) {
       return firstClaimable ? -1 : 1;
     }
@@ -448,10 +521,18 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
       return -1;
     }
 
-    return firstDeadline.compareTo(secondDeadline);
+    final int comparison = firstDeadline.compareTo(secondDeadline);
+
+    return comparison != 0
+        ? comparison
+        : first.id.compareTo(second.id);
   }
 
   void _showMessage(String message, Color color) {
+    if (!mounted) {
+      return;
+    }
+
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -464,12 +545,136 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
       );
   }
 
+  Widget _buildNavigationCard({
+    required IconData icon,
+    required String title,
+    required String description,
+    required String buttonLabel,
+    required VoidCallback onPressed,
+  }) {
+    return Card(
+      margin: const EdgeInsets.only(bottom: 16),
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(
+                  icon,
+                  size: 30,
+                  color: const Color(0xFF356B4D),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    title,
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(description),
+            const SizedBox(height: 16),
+            SizedBox(
+              width: double.infinity,
+              child: OutlinedButton.icon(
+                onPressed: _isBusy ? null : onPressed,
+                icon: Icon(icon),
+                label: Text(buttonLabel),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildNavigationSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _buildNavigationCard(
+          icon: Icons.inventory_outlined,
+          title: 'My claimed donations',
+          description:
+              'Review the donations your NGO has claimed and '
+              'confirm receiving capacity and pickup arrangements.',
+          buttonLabel: 'View claimed donations',
+          onPressed: _openClaimedDonations,
+        ),
+        _buildNavigationCard(
+          icon: Icons.fact_check_outlined,
+          title: 'Delivery inbox',
+          description:
+              'Find donations awaiting your NGO’s delivery review. '
+              'Open a delivery to accept or reject it, or view '
+              'previously accepted and rejected deliveries.',
+          buttonLabel: 'Open delivery inbox',
+          onPressed: _openDeliveryInbox,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildListingsError() {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            const Icon(
+              Icons.error_outline,
+              size: 40,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Unable to load donation listings. '
+              'Check your connection and NGO account access.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            ElevatedButton.icon(
+              onPressed: _isBusy ? null : _retryDonations,
+              icon: const Icon(Icons.refresh),
+              label: const Text('Try again'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildFooter() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: 8,
+        vertical: 16,
+      ),
+      child: Text(
+        'FoodBridge records declarations and workflow checks. '
+        'It does not certify food safety.',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Colors.grey.shade700,
+            ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('NGO Dashboard'),
         actions: [
+          IconButton(
+            tooltip: 'Delivery inbox',
+            onPressed: _isBusy ? null : _openDeliveryInbox,
+            icon: const Icon(Icons.fact_check_outlined),
+          ),
           IconButton(
             tooltip: 'My claimed donations',
             onPressed: _isBusy ? null : _openClaimedDonations,
@@ -488,77 +693,92 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           ),
         ],
       ),
-      body: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
-        stream: _donationsStream,
-        builder: (context, snapshot) {
-          if (snapshot.hasError) {
-            return Center(
-              child: SingleChildScrollView(
-                padding: const EdgeInsets.all(24),
-                child: Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Text(
-                      'Unable to load donation listings.\n\n'
-                      '${snapshot.error}',
-                      textAlign: TextAlign.center,
+      body: SafeArea(
+        child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+          stream: _donationsStream,
+          builder: (context, snapshot) {
+            final donations =
+                snapshot.data?.docs.toList() ??
+                <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+
+            donations.sort(_compareDonations);
+
+            final int claimableCount = donations
+                .where(
+                  (document) => _canClaimListing(document.data()),
+                )
+                .length;
+
+            final bool showListings =
+                !snapshot.hasError &&
+                snapshot.hasData &&
+                donations.isNotEmpty;
+
+            // Navigation + heading + listings/state + footer.
+            final int contentCount =
+                showListings ? donations.length : 1;
+
+            return ListView.builder(
+              padding: const EdgeInsets.all(16),
+              itemCount: contentCount + 3,
+              itemBuilder: (context, index) {
+                if (index == 0) {
+                  return _buildNavigationSection();
+                }
+
+                if (index == 1) {
+                  if (snapshot.hasError || !snapshot.hasData) {
+                    return Padding(
+                      padding: const EdgeInsets.only(
+                        top: 8,
+                        bottom: 16,
+                      ),
+                      child: Text(
+                        'Food donation listings',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                    );
+                  }
+
+                  return Padding(
+                    padding: const EdgeInsets.only(bottom: 16),
+                    child: _buildHeader(
+                      listingCount: donations.length,
+                      claimableCount: claimableCount,
                     ),
-                    const SizedBox(height: 16),
-                    ElevatedButton.icon(
-                      onPressed: _retryDonations,
-                      icon: const Icon(Icons.refresh),
-                      label: const Text('Try again'),
+                  );
+                }
+
+                final int contentIndex = index - 2;
+
+                if (contentIndex == contentCount) {
+                  return _buildFooter();
+                }
+
+                if (snapshot.hasError) {
+                  return _buildListingsError();
+                }
+
+                if (!snapshot.hasData) {
+                  return const Padding(
+                    padding: EdgeInsets.all(32),
+                    child: Center(
+                      child: CircularProgressIndicator(),
                     ),
-                  ],
-                ),
-              ),
-            );
-          }
+                  );
+                }
 
-          if (!snapshot.hasData) {
-            return const Center(
-              child: CircularProgressIndicator(),
-            );
-          }
+                if (donations.isEmpty) {
+                  return const _EmptyDonationsView();
+                }
 
-          final donations = snapshot.data!.docs.toList();
-
-          if (donations.isEmpty) {
-            return const _EmptyDonationsView();
-          }
-
-          donations.sort(_compareDonations);
-
-          final int claimableCount = donations.where((document) {
-            final Map<String, dynamic> data = document.data();
-
-            return _ordinaryEligibility(
-                  _readText(data['eligibilityStatus'], ''),
-                ) &&
-                _windowOpen(
-                  _readDateTime(data['pickupDeadline']),
-                ) &&
-                data['donorId'] != _auth.currentUser?.uid;
-          }).length;
-
-          return ListView.builder(
-            padding: const EdgeInsets.all(16),
-            itemCount: donations.length + 1,
-            itemBuilder: (context, index) {
-              if (index == 0) {
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: _buildHeader(
-                    listingCount: donations.length,
-                    claimableCount: claimableCount,
-                  ),
+                return _buildDonationCard(
+                  donations[contentIndex],
                 );
-              }
-
-              return _buildDonationCard(donations[index - 1]);
-            },
-          );
-        },
+              },
+            );
+          },
+        ),
       ),
     );
   }
@@ -609,9 +829,8 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
   ) {
     final Map<String, dynamic> donation = document.data();
 
-    final DateTime? deadline = _readDateTime(
-      donation['pickupDeadline'],
-    );
+    final DateTime? deadline =
+        _readDateTime(donation['pickupDeadline']);
 
     final String category = _readText(
       donation['foodCategory'],
@@ -627,19 +846,14 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
         donation['donorId'] == _auth.currentUser?.uid;
 
     final bool windowOpen = _windowOpen(deadline);
-
-    final bool canClaim =
-        _auth.currentUser != null &&
-        !isOwnDonation &&
-        _ordinaryEligibility(eligibility) &&
-        windowOpen;
+    final bool canClaim = _canClaimListing(donation);
 
     final bool isClaimingThis =
         _claimingDonationId == document.id;
 
     final Color countdownColor = _countdownColor(deadline);
 
-    String buttonLabel;
+    final String buttonLabel;
 
     if (isClaimingThis) {
       buttonLabel = 'Claiming...';
@@ -658,6 +872,7 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     }
 
     return Card(
+      key: ValueKey('listing-${document.id}'),
       margin: const EdgeInsets.only(bottom: 16),
       child: Padding(
         padding: const EdgeInsets.all(16),
@@ -751,7 +966,9 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                        ),
                       )
                     : const Icon(
                         Icons.volunteer_activism_outlined,
@@ -796,12 +1013,16 @@ class _InfoRow extends StatelessWidget {
               children: [
                 Text(
                   label,
-                  style: TextStyle(color: Colors.grey.shade700),
+                  style: TextStyle(
+                    color: Colors.grey.shade700,
+                  ),
                 ),
                 const SizedBox(height: 2),
                 Text(
                   value,
-                  style: const TextStyle(fontWeight: FontWeight.w600),
+                  style: const TextStyle(
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ],
             ),
@@ -849,15 +1070,15 @@ class _EmptyDonationsView extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: SingleChildScrollView(
-        padding: const EdgeInsets.all(32),
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(
               Icons.inventory_2_outlined,
-              size: 76,
+              size: 64,
               color: Colors.grey.shade500,
             ),
             const SizedBox(height: 20),
@@ -869,10 +1090,12 @@ class _EmptyDonationsView extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               'New listings will appear when donors publish donations. '
-              'Your claimed donations remain available through '
-              'the inventory icon above.',
+              'Use the cards above to open your claimed donations '
+              'or review delivered donations.',
               textAlign: TextAlign.center,
-              style: TextStyle(color: Colors.grey.shade700),
+              style: TextStyle(
+                color: Colors.grey.shade700,
+              ),
             ),
           ],
         ),
