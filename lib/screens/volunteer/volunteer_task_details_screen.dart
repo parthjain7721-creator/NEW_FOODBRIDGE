@@ -4,10 +4,10 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/delivery_service.dart';
+import '../../services/pickup_completion_service.dart';
 import 'donation_qr_scan_screen.dart';
 import 'pickup_inspection_screen.dart';
-
-import '../../services/pickup_completion_service.dart';
 
 class VolunteerTaskDetailsScreen extends StatefulWidget {
   final String donationId;
@@ -27,18 +27,40 @@ class _VolunteerTaskDetailsScreenState
   late Stream<DocumentSnapshot<Map<String, dynamic>>> _taskStream;
 
   Timer? _timer;
+  StreamSubscription<User?>? _authSubscription;
+
   DateTime _now = DateTime.now();
 
   bool _isVerificationFlowOpen = false;
+  bool _isDeliveryFlowOpen = false;
+  bool _isReviewFlowOpen = false;
 
   final PickupCompletionService _pickupCompletionService =
       PickupCompletionService();
+
+  final DeliveryService _deliveryService = DeliveryService();
+
+  bool get _isAnyFlowOpen =>
+      _isVerificationFlowOpen ||
+      _isDeliveryFlowOpen ||
+      _isReviewFlowOpen;
 
   @override
   void initState() {
     super.initState();
 
     _connectTask();
+
+    _authSubscription =
+        FirebaseAuth.instance.authStateChanges().listen((_) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _connectTask();
+      });
+    });
 
     _timer = Timer.periodic(
       const Duration(seconds: 1),
@@ -68,6 +90,7 @@ class _VolunteerTaskDetailsScreenState
   @override
   void dispose() {
     _timer?.cancel();
+    _authSubscription?.cancel();
     super.dispose();
   }
 
@@ -79,33 +102,42 @@ class _VolunteerTaskDetailsScreenState
   }
 
   void _retry() {
+    if (_isAnyFlowOpen) {
+      return;
+    }
+
     setState(() {
       _connectTask();
     });
   }
 
   bool _sameSession(String uid, String donationId) {
-    return FirebaseAuth.instance.currentUser?.uid == uid &&
+    return mounted &&
+        FirebaseAuth.instance.currentUser?.uid == uid &&
         widget.donationId == donationId;
+  }
+
+  void _requireSameSession(String uid, String donationId) {
+    if (!_sameSession(uid, donationId)) {
+      throw StateError(
+        'The account or task changed. '
+        'Close this dialog and start again.',
+      );
+    }
   }
 
   Future<void> _checkCurrentTask(
     String donationId,
     String volunteerId,
   ) async {
-    final DocumentSnapshot<Map<String, dynamic>> snapshot =
-        await FirebaseFirestore.instance
-            .collection('donations')
-            .doc(donationId)
-            .get(const GetOptions(source: Source.server));
+    final snapshot = await FirebaseFirestore.instance
+        .collection('donations')
+        .doc(donationId)
+        .get(const GetOptions(source: Source.server));
 
-    if (!_sameSession(volunteerId, donationId)) {
-      throw StateError(
-        'The account or task changed. Please start verification again.',
-      );
-    }
+    _requireSameSession(volunteerId, donationId);
 
-    final Map<String, dynamic>? data = snapshot.data();
+    final data = snapshot.data();
 
     if (!snapshot.exists || data == null) {
       throw StateError('This donation no longer exists.');
@@ -131,10 +163,12 @@ class _VolunteerTaskDetailsScreenState
 
     if (data['eligibilityStatus'] != 'eligible' &&
         data['eligibilityStatus'] != 'urgent') {
-      throw StateError('This donation is not eligible for ordinary pickup.');
+      throw StateError(
+        'This donation is not eligible for ordinary pickup.',
+      );
     }
 
-    final DateTime? deadline = _date(data['pickupDeadline']);
+    final deadline = _date(data['pickupDeadline']);
 
     if (deadline == null || !deadline.isAfter(DateTime.now())) {
       throw StateError(
@@ -155,12 +189,12 @@ class _VolunteerTaskDetailsScreenState
   }
 
   Future<void> _startPickupInspection() async {
-    if (_isVerificationFlowOpen) {
+    if (_isAnyFlowOpen) {
       return;
     }
 
-    final String? volunteerId =
-        FirebaseAuth.instance.currentUser?.uid;
+    final volunteerId = FirebaseAuth.instance.currentUser?.uid;
+    final donationId = widget.donationId;
 
     if (volunteerId == null) {
       _showSnackBar(
@@ -170,14 +204,18 @@ class _VolunteerTaskDetailsScreenState
       return;
     }
 
-    final String donationId = widget.donationId;
-
     setState(() {
       _isVerificationFlowOpen = true;
     });
 
     try {
-      final bool? verified = await Navigator.of(context).push<bool>(
+      await _checkCurrentTask(donationId, volunteerId);
+
+      if (!mounted) {
+        return;
+      }
+
+      final verified = await Navigator.of(context).push<bool>(
         MaterialPageRoute<bool>(
           builder: (_) => DonationQrScanScreen(
             donationId: donationId,
@@ -189,19 +227,14 @@ class _VolunteerTaskDetailsScreenState
         return;
       }
 
-      if (!_sameSession(volunteerId, donationId)) {
-        throw StateError(
-          'The account or task changed. Please scan again.',
-        );
-      }
-
+      _requireSameSession(volunteerId, donationId);
       await _checkCurrentTask(donationId, volunteerId);
 
       if (!mounted) {
         return;
       }
 
-      final PickupInspectionDraft? draft =
+      final draft =
           await Navigator.of(context).push<PickupInspectionDraft>(
         MaterialPageRoute<PickupInspectionDraft>(
           builder: (_) => PickupInspectionScreen(
@@ -214,10 +247,11 @@ class _VolunteerTaskDetailsScreenState
         return;
       }
 
-      if (!_sameSession(volunteerId, donationId) ||
-          draft.donationId != donationId) {
+      _requireSameSession(volunteerId, donationId);
+
+      if (draft.donationId != donationId) {
         throw StateError(
-          'The account or task changed. The draft was not submitted.',
+          'The inspection draft does not match this task.',
         );
       }
 
@@ -232,52 +266,27 @@ class _VolunteerTaskDetailsScreenState
         throw StateError('The inspection draft has no photo.');
       }
 
-      // Recheck after inspection because the task may have changed
-      // while the camera screen was open.
       await _checkCurrentTask(donationId, volunteerId);
 
       if (!mounted) {
         return;
       }
 
-      await _showDraftReview(draft);
-    } on FirebaseException catch (error, stackTrace) {
-      debugPrint(
-        'Pickup verification failed: '
-        '${error.code} - ${error.message}',
+      await _showDraftReview(
+        draft,
+        volunteerId: volunteerId,
+        donationId: donationId,
       );
+    } catch (exception, stackTrace) {
+      debugPrint('Pickup inspection flow failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
-      if (!mounted) {
-        return;
+      if (_sameSession(volunteerId, donationId)) {
+        _showSnackBar(
+          _operationError(exception, 'verify pickup'),
+          isError: true,
+        );
       }
-
-      _showSnackBar(
-        'Unable to verify the current task. '
-        'Check your connection and try again. (${error.code})',
-        isError: true,
-      );
-    } on StateError catch (error) {
-      if (!mounted) {
-        return;
-      }
-
-      _showSnackBar(
-        error.message.toString(),
-        isError: true,
-      );
-    } catch (error, stackTrace) {
-      debugPrint('Pickup inspection flow failed: $error');
-      debugPrintStack(stackTrace: stackTrace);
-
-      if (!mounted) {
-        return;
-      }
-
-      _showSnackBar(
-        'Unable to complete the inspection draft. Please try again.',
-        isError: true,
-      );
     } finally {
       if (mounted) {
         setState(() {
@@ -287,9 +296,64 @@ class _VolunteerTaskDetailsScreenState
     }
   }
 
-  Future<void> _showDraftReview(PickupInspectionDraft draft) async {
-    final String? volunteerId =
-        FirebaseAuth.instance.currentUser?.uid;
+  Future<void> _showDraftReview(
+    PickupInspectionDraft draft, {
+    required String volunteerId,
+    required String donationId,
+  }) async {
+    final completed = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _TaskActionDialog(
+        title: 'Review and complete pickup',
+        submitLabel: 'Record pickup',
+        progressText:
+            'Recording the photo fingerprint and pickup details...',
+        information: [
+          'Donation ID: $donationId',
+          'Observed packaging: '
+              '${_packagingLabel(draft.packagingCondition)}',
+          'Inspection notes: '
+              '${draft.notes.trim().isEmpty ? 'None entered' : draft.notes}',
+          'Photo returned to app: '
+              '${_formatDate(draft.photoReturnedAt)}',
+          'The displayed photo time comes from your device. '
+              'Firestore records a separate server timestamp '
+              'when pickup is saved.',
+          'Submit only after collecting the donation from the donor.',
+          'Only inspection details and a SHA-256 photo fingerprint '
+              'are recorded remotely. The image is not uploaded. '
+              'This does not guarantee that the image will remain '
+              'available on the device or certify food safety.',
+        ],
+        onSubmit: (_) async {
+          _requireSameSession(volunteerId, donationId);
+
+          await _pickupCompletionService.completePickup(
+            donationId: donationId,
+            localPhotoPath: draft.localPhotoPath,
+            packagingCondition: draft.packagingCondition,
+            notes: draft.notes,
+          );
+        },
+        describeError: (exception) =>
+            _operationError(exception, 'record pickup'),
+      ),
+    );
+
+    if (completed == true &&
+        _sameSession(volunteerId, donationId)) {
+      _showSnackBar('Pickup recorded successfully.');
+    }
+  }
+
+  Future<void> _showDeliveryHandoverDialog() async {
+    if (_isAnyFlowOpen) {
+      return;
+    }
+
+    final volunteerId = FirebaseAuth.instance.currentUser?.uid;
+    final donationId = widget.donationId;
 
     if (volunteerId == null) {
       _showSnackBar(
@@ -299,212 +363,186 @@ class _VolunteerTaskDetailsScreenState
       return;
     }
 
-    if (draft.donationId != widget.donationId) {
+    setState(() {
+      _isDeliveryFlowOpen = true;
+    });
+
+    try {
+      final completed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _TaskActionDialog(
+          title: 'Confirm delivery handover',
+          submitLabel: 'Confirm handover',
+          progressText: 'Recording delivery handover...',
+          information: [
+            'Donation ID: $donationId',
+            'Confirm only after physically handing over the donation '
+                'to the receiving NGO.',
+            'This records your handover declaration. '
+                'NGO acceptance or rejection remains a separate step.',
+          ],
+          notesLabel: 'Handover notes (optional)',
+          onSubmit: (notes) async {
+            _requireSameSession(volunteerId, donationId);
+
+            await _deliveryService.markDelivered(
+              donationId: donationId,
+              handoverNotes: notes,
+            );
+          },
+          describeError: (exception) =>
+              _operationError(exception, 'record delivery'),
+        ),
+      );
+
+      if (completed == true &&
+          _sameSession(volunteerId, donationId)) {
+        _showSnackBar(
+          'Delivery handover recorded. Awaiting NGO review.',
+        );
+      }
+    } catch (exception, stackTrace) {
+      debugPrint('Delivery dialog failed: $exception');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (_sameSession(volunteerId, donationId)) {
+        _showSnackBar(
+          _operationError(exception, 'record delivery'),
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isDeliveryFlowOpen = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _showDeliveryReviewDialog({
+    required bool accepted,
+  }) async {
+    if (_isAnyFlowOpen) {
+      return;
+    }
+
+    final ngoId = FirebaseAuth.instance.currentUser?.uid;
+    final donationId = widget.donationId;
+
+    if (ngoId == null) {
       _showSnackBar(
-        'The inspection draft does not match this task.',
+        'Your session has ended. Please log in again.',
         isError: true,
       );
       return;
     }
 
-    bool isSubmitting = false;
-    String? submissionError;
+    setState(() {
+      _isReviewFlowOpen = true;
+    });
 
-    final bool? completed = await showDialog<bool>(
-      context: context,
-      barrierDismissible: false,
-      builder: (dialogContext) {
-        return StatefulBuilder(
-          builder: (dialogContext, setDialogState) {
-            Future<void> submitPickup() async {
-              if (isSubmitting) {
-                return;
-              }
+    try {
+      final completed = await showDialog<bool>(
+        context: context,
+        barrierDismissible: false,
+        builder: (_) => _TaskActionDialog(
+          title: accepted ? 'Accept delivery' : 'Reject delivery',
+          submitLabel: accepted ? 'Accept delivery' : 'Reject delivery',
+          progressText: 'Recording NGO delivery review...',
+          information: [
+            'Donation ID: $donationId',
+            accepted
+                ? 'Confirm that your NGO has physically received '
+                    'and reviewed this donation.'
+                : 'Record why your NGO is rejecting this delivery.',
+            'This decision is final in the current app workflow '
+                'and does not certify food safety.',
+          ],
+          notesLabel: accepted
+              ? 'Acceptance notes (optional)'
+              : 'Rejection reason',
+          requireNotes: !accepted,
+          onSubmit: (reason) async {
+            _requireSameSession(ngoId, donationId);
 
-              if (!_sameSession(volunteerId, draft.donationId)) {
-                setDialogState(() {
-                  submissionError =
-                      'The account or task changed. '
-                      'Close this dialog and start verification again.';
-                });
-                return;
-              }
-
-              setDialogState(() {
-                isSubmitting = true;
-                submissionError = null;
-              });
-
-              String? errorMessage;
-
-              try {
-                await _pickupCompletionService.completePickup(
-                  donationId: draft.donationId,
-                  localPhotoPath: draft.localPhotoPath,
-                  packagingCondition: draft.packagingCondition,
-                  notes: draft.notes,
-                );
-
-                if (!dialogContext.mounted) {
-                  return;
-                }
-
-                Navigator.of(dialogContext).pop<bool>(true);
-                return;
-              } on FirebaseException catch (error, stackTrace) {
-                debugPrint(
-                  'Pickup evidence operation failed: '
-                  '${error.plugin}/${error.code} - ${error.message}',
-                );
-                debugPrintStack(stackTrace: stackTrace);
-
-                if (error.code == 'permission-denied') {
-                  errorMessage =
-                      'Pickup completion was denied by Firestore rules. '
-                      'Confirm that the updated pickup rules are published '
-                      'and that this task is assigned to your active '
-                      'volunteer account.';
-                } else if (error.code == 'unauthenticated') {
-                  errorMessage =
-                      'Your session has ended. Please log in again.';
-                } else {
-                  errorMessage =
-                      'Unable to record pickup evidence. '
-                      '(${error.code})';
-                }
-              } on StateError catch (error) {
-                errorMessage = error.message.toString();
-              } catch (error, stackTrace) {
-                debugPrint('Unexpected pickup submission error: $error');
-                debugPrintStack(stackTrace: stackTrace);
-
-                errorMessage =
-                    'Unable to confirm the submission result. '
-                    'Retry this same draft or check the task status.';
-              }
-
-              if (!dialogContext.mounted) {
-                return;
-              }
-
-              setDialogState(() {
-                isSubmitting = false;
-                submissionError = errorMessage;
-              });
-            }
-
-            return PopScope(
-              canPop: !isSubmitting,
-              child: AlertDialog(
-                title: const Text('Review and complete pickup'),
-                content: SingleChildScrollView(
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      SelectableText(
-                        'Donation ID: ${draft.donationId}',
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Observed packaging: '
-                        '${_packagingLabel(draft.packagingCondition)}',
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Inspection notes: '
-                        '${draft.notes.isEmpty ? 'None entered' : draft.notes}',
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        'Photo returned to app: '
-                        '${_formatDate(draft.photoReturnedAt)}',
-                      ),
-                      const SizedBox(height: 12),
-                      const Text(
-                        'The displayed photo time is from your device. '
-                        'FoodBridge records a separate server timestamp '
-                        'when it saves the pickup.',
-                      ),
-                      const SizedBox(height: 16),
-                      const Text(
-                        'Submit only when the physical handover has '
-                        'occurred and these observations describe '
-                        'the donation you collected.\n\n'
-                        'Submission records the inspection details and a '
-                        'SHA-256 fingerprint of the locally retained photo. '
-                        'The photo itself is not uploaded to Firebase '
-                        'Storage. This does not certify food safety.',
-                      ),
-                      if (submissionError != null) ...[
-                        const SizedBox(height: 16),
-                        Text(
-                          submissionError!,
-                          style: TextStyle(
-                            color: Colors.red.shade700,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                      ],
-                      if (isSubmitting) ...[
-                        const SizedBox(height: 20),
-                        const Center(
-                          child: CircularProgressIndicator(),
-                        ),
-                        const SizedBox(height: 12),
-                        const Text(
-                          'Recording pickup evidence and updating '
-                          'the task status. Please wait.',
-                        ),
-                      ],
-                    ],
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: isSubmitting
-                        ? null
-                        : () {
-                            Navigator.of(dialogContext).pop<bool>(false);
-                          },
-                    child: const Text('Close'),
-                  ),
-                  FilledButton(
-                    onPressed: isSubmitting ? null : submitPickup,
-                    child: Text(
-                      isSubmitting
-                          ? 'Submitting...'
-                          : submissionError == null
-                              ? 'Record pickup'
-                              : 'Retry same submission',
-                    ),
-                  ),
-                ],
-              ),
+            await _deliveryService.reviewDelivery(
+              donationId: donationId,
+              accepted: accepted,
+              reason: reason,
             );
           },
+          describeError: (exception) =>
+              _operationError(exception, 'record NGO review'),
+        ),
+      );
+
+      if (completed == true && _sameSession(ngoId, donationId)) {
+        _showSnackBar(
+          accepted
+              ? 'Delivery accepted successfully.'
+              : 'Delivery rejected successfully.',
         );
-      },
-    );
+      }
+    } catch (exception, stackTrace) {
+      debugPrint('NGO review dialog failed: $exception');
+      debugPrintStack(stackTrace: stackTrace);
 
-    if (!mounted || completed != true) {
-      return;
+      if (_sameSession(ngoId, donationId)) {
+        _showSnackBar(
+          _operationError(exception, 'record NGO review'),
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isReviewFlowOpen = false;
+        });
+      }
+    }
+  }
+
+  String _operationError(Object exception, String operation) {
+    if (exception is StateError) {
+      return exception.message.toString();
     }
 
-    if (!_sameSession(volunteerId, draft.donationId)) {
-      return;
+    if (exception is FirebaseException) {
+      switch (exception.code) {
+        case 'permission-denied':
+          return 'Unable to $operation: Firestore denied the request. '
+              'Check the published rules, your active account role, '
+              'the donation assignment, and its current status.';
+
+        case 'unauthenticated':
+          return 'Your session has ended. Please log in again.';
+
+        case 'unavailable':
+        case 'deadline-exceeded':
+        case 'aborted':
+          return 'Unable to confirm the result. Check your connection '
+              'and the latest task status before retrying. '
+              '(${exception.code})';
+
+        default:
+          return 'Unable to $operation. (${exception.code})';
+      }
     }
 
-    _showSnackBar(
-      'Pickup recorded successfully. '
-      'The task status will update from Firestore.',
-    );
+    return 'Unable to $operation. '
+        'Check the latest task status before retrying.';
   }
 
   void _showSnackBar(
     String message, {
     bool isError = false,
   }) {
+    if (!mounted) {
+      return;
+    }
+
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -524,6 +562,14 @@ class _VolunteerTaskDetailsScreenState
         : fallback;
   }
 
+  Map<String, dynamic>? _map(dynamic value) {
+    if (value is Map<String, dynamic>) {
+      return value;
+    }
+
+    return null;
+  }
+
   DateTime? _date(dynamic value) {
     return value is Timestamp ? value.toDate() : null;
   }
@@ -533,11 +579,9 @@ class _VolunteerTaskDetailsScreenState
       return 'Not recorded';
     }
 
-    final DateTime local = value.toLocal();
+    final local = value.toLocal();
 
-    String two(int number) {
-      return number.toString().padLeft(2, '0');
-    }
+    String two(int number) => number.toString().padLeft(2, '0');
 
     return '${two(local.day)}/${two(local.month)}/${local.year} '
         '${two(local.hour)}:${two(local.minute)}';
@@ -588,7 +632,7 @@ class _VolunteerTaskDetailsScreenState
       case 'picked_up':
         return 'Picked up';
       case 'delivered':
-        return 'Delivered';
+        return 'Delivered — awaiting NGO review';
       case 'accepted':
         return 'Accepted by NGO';
       case 'rejected':
@@ -607,17 +651,15 @@ class _VolunteerTaskDetailsScreenState
       return 'Pickup deadline not recorded';
     }
 
-    final Duration remaining = deadline.difference(_now);
+    final remaining = deadline.difference(_now);
 
     if (remaining <= Duration.zero) {
       return 'Pickup window closed';
     }
 
-    final int hours = remaining.inHours;
-    final int minutes = remaining.inMinutes.remainder(60);
-    final int seconds = remaining.inSeconds.remainder(60);
-
-    return '${hours}h ${minutes}m ${seconds}s remaining';
+    return '${remaining.inHours}h '
+        '${remaining.inMinutes.remainder(60)}m '
+        '${remaining.inSeconds.remainder(60)}s remaining';
   }
 
   Color _windowColor(DateTime? deadline) {
@@ -625,7 +667,7 @@ class _VolunteerTaskDetailsScreenState
       return Colors.grey.shade700;
     }
 
-    final Duration remaining = deadline.difference(_now);
+    final remaining = deadline.difference(_now);
 
     if (remaining <= Duration.zero) {
       return Colors.red.shade700;
@@ -711,33 +753,33 @@ class _VolunteerTaskDetailsScreenState
 
   @override
   Widget build(BuildContext context) {
-    final String? uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Pickup task details'),
+        title: const Text('Donation task details'),
       ),
       body: uid == null
           ? _message('Your session has ended. Please log in again.')
           : StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+              key: ValueKey('${widget.donationId}|$uid'),
               stream: _taskStream,
               builder: (context, snapshot) {
                 if (snapshot.hasError) {
                   return Center(
-                    child: SingleChildScrollView(
+                    child: Padding(
                       padding: const EdgeInsets.all(24),
                       child: Column(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Text(
-                            'Unable to load this task.\n\n'
-                            '${snapshot.error}',
+                          const Text(
+                            'Unable to load this task. '
+                            'Check your connection and account access.',
                             textAlign: TextAlign.center,
                           ),
                           const SizedBox(height: 16),
                           ElevatedButton.icon(
-                            onPressed:
-                                _isVerificationFlowOpen ? null : _retry,
+                            onPressed: _isAnyFlowOpen ? null : _retry,
                             icon: const Icon(Icons.refresh),
                             label: const Text('Try again'),
                           ),
@@ -747,66 +789,64 @@ class _VolunteerTaskDetailsScreenState
                   );
                 }
 
-                if (!snapshot.hasData) {
+                if (!snapshot.hasData ||
+                    snapshot.connectionState ==
+                        ConnectionState.waiting) {
                   return const Center(
                     child: CircularProgressIndicator(),
                   );
                 }
 
                 final document = snapshot.data!;
-                final Map<String, dynamic>? data = document.data();
+                final data = document.data();
 
                 if (!document.exists || data == null) {
                   return _message('This donation no longer exists.');
                 }
 
-                if (data['assignedVolunteerId'] != uid) {
+                final isVolunteer =
+                    data['assignedVolunteerId'] == uid;
+                final isReceivingNgo =
+                    data['claimedByNgoId'] == uid;
+
+                if (!isVolunteer && !isReceivingNgo) {
                   return _message(
-                    'This task is not assigned to your account.',
+                    'This task is not assigned to your volunteer '
+                    'account or claimed by your NGO account.',
                   );
                 }
 
-                final String status = _text(
-                  data['status'],
-                  'unknown',
-                );
+                final status = _text(data['status'], 'unknown');
+                final deadline = _date(data['pickupDeadline']);
+                final plannedPickup = _date(data['plannedPickupAt']);
 
-                final DateTime? deadline = _date(
-                  data['pickupDeadline'],
-                );
-
-                final DateTime? plannedPickup = _date(
-                  data['plannedPickupAt'],
-                );
-
-                final bool awaitingPickup =
+                final awaitingPickup =
                     status == 'volunteer_assigned';
-
-                final bool assignmentActive =
+                final assignmentActive =
                     data['volunteerAssignmentStatus'] == 'assigned';
-
-                final bool windowOpen =
+                final windowOpen =
                     deadline != null && deadline.isAfter(_now);
 
-                final bool confirmationsComplete =
+                final confirmationsComplete =
                     data['ngoPickupConfirmed'] == true &&
                     data['ngoCapacityConfirmed'] == true &&
                     data['ngoDetailsReviewed'] == true &&
                     data['donorPickupConfirmed'] == true;
 
-                final bool ordinarilyEligible =
+                final ordinarilyEligible =
                     data['eligibilityStatus'] == 'eligible' ||
                     data['eligibilityStatus'] == 'urgent';
 
                 final Object? quantity = data['quantity'];
 
-                final bool quantityConfirmed =
+                final quantityConfirmed =
                     quantity is num &&
                     quantity.isFinite &&
                     quantity > 0 &&
                     data['ngoConfirmedQuantity'] == quantity;
 
-                final bool canStartInspection =
+                final canStartInspection =
+                    isVolunteer &&
                     awaitingPickup &&
                     assignmentActive &&
                     windowOpen &&
@@ -814,16 +854,16 @@ class _VolunteerTaskDetailsScreenState
                     ordinarilyEligible &&
                     quantityConfirmed;
 
-                final bool pickupRecorded =
-                    status == 'picked_up' ||
-                    status == 'delivered' ||
-                    status == 'accepted';
+                final pickupInspection =
+                    _map(data['pickupInspection']);
+                final deliveryHandover =
+                    _map(data['deliveryHandover']);
+                final ngoReview =
+                    _map(data['ngoDeliveryReview']);
 
-                final Map<String, dynamic>? pickupInspection =
-                    data['pickupInspection'] is Map
-                        ? data['pickupInspection']
-                            as Map<String, dynamic>
-                        : null;
+                final pickupRecorded =
+                    pickupInspection != null ||
+                    data['pickedUpAt'] is Timestamp;
 
                 return ListView(
                   padding: const EdgeInsets.all(16),
@@ -857,8 +897,8 @@ class _VolunteerTaskDetailsScreenState
                           !ordinarilyEligible ||
                           !quantityConfirmed)
                         _notice(
-                          'The required confirmations, eligibility, '
-                          'or quantity are incomplete. '
+                          'Required confirmations, eligibility, or '
+                          'quantity are incomplete. '
                           'Do not proceed with collection.',
                           Colors.red.shade700,
                         ),
@@ -874,7 +914,7 @@ class _VolunteerTaskDetailsScreenState
                         _notice(
                           'The planned pickup time has been reached '
                           'or passed. Coordinate with the donor and NGO. '
-                          'The pickup deadline has not been extended.',
+                          'The deadline has not been extended.',
                           Colors.orange.shade900,
                         ),
                     ],
@@ -977,20 +1017,19 @@ class _VolunteerTaskDetailsScreenState
                       ],
                     ),
 
-                    if (awaitingPickup)
+                    if (awaitingPickup && isVolunteer)
                       _section(
                         'QR verification and pickup inspection',
                         [
                           const Text(
-                            'Scan the donor’s Donation Passport first. '
-                            'After a match, record the observed packaging '
-                            'condition and take a pickup photo.',
+                            'Scan the donor’s Donation Passport. '
+                            'After a match, inspect packaging '
+                            'and take a pickup photo.',
                           ),
                           const SizedBox(height: 16),
                           ElevatedButton.icon(
                             onPressed:
-                                canStartInspection &&
-                                        !_isVerificationFlowOpen
+                                canStartInspection && !_isAnyFlowOpen
                                     ? _startPickupInspection
                                     : null,
                             icon: const Icon(Icons.qr_code_scanner),
@@ -1016,9 +1055,7 @@ class _VolunteerTaskDetailsScreenState
                         if (pickupRecorded) ...[
                           _field(
                             'Pickup recorded at',
-                            _formatDate(
-                              _date(data['pickedUpAt']),
-                            ),
+                            _formatDate(_date(data['pickedUpAt'])),
                           ),
                           if (pickupInspection != null) ...[
                             _field(
@@ -1037,35 +1074,167 @@ class _VolunteerTaskDetailsScreenState
                             _field(
                               'Evidence recorded at',
                               _formatDate(
-                                _date(
-                                  pickupInspection['recordedAt'],
-                                ),
+                                _date(pickupInspection['recordedAt']),
                               ),
                             ),
                             _field(
                               'Photo storage',
-                              pickupInspection['photoStoredRemotely'] == false
-                                  ? 'Photo retained locally; SHA-256 '
-                                      'fingerprint recorded'
-                                  : 'Remote photo storage',
+                              pickupInspection['photoStoredRemotely'] ==
+                                      false
+                                  ? 'Image not uploaded; '
+                                      'local photo fingerprint recorded'
+                                  : pickupInspection[
+                                              'photoStoredRemotely'] ==
+                                          true
+                                      ? 'Marked as stored remotely'
+                                      : 'Not recorded',
                             ),
                           ],
+                        ] else
                           const Text(
-                            'Pickup has been recorded. Delivery and final '
-                            'NGO acceptance are separate steps.',
+                            'No pickup inspection has been recorded yet. '
+                            'The pickup workflow records inspection '
+                            'details and a photo fingerprint, '
+                            'not a remotely stored image.',
                           ),
-                        ] else ...[
-                          const Text(
-                            'After QR matching and inspection, review the '
-                            'draft and explicitly submit it. FoodBridge '
-                            'records the inspection details and a SHA-256 '
-                            'fingerprint of the locally retained photo. '
-                            'The photo itself is not uploaded to Firebase '
-                            'Storage.',
-                          ),
-                        ],
                       ],
                     ),
+
+                    _section(
+                      'Delivery and NGO review',
+                      [
+                        if (status == 'picked_up') ...[
+                          const Text(
+                            'Confirm delivery only after physical '
+                            'handover to the receiving NGO.',
+                          ),
+                          if (isVolunteer) ...[
+                            const SizedBox(height: 16),
+                            ElevatedButton.icon(
+                              onPressed:
+                                  !_isAnyFlowOpen &&
+                                          pickupInspection != null
+                                      ? _showDeliveryHandoverDialog
+                                      : null,
+                              icon: const Icon(Icons.local_shipping),
+                              label: Text(
+                                _isDeliveryFlowOpen
+                                    ? 'Delivery dialog open...'
+                                    : 'Confirm delivery handover',
+                              ),
+                            ),
+                          ] else
+                            const Text(
+                              'Awaiting the volunteer’s handover record.',
+                            ),
+                        ] else if (status == 'delivered') ...[
+                          _field(
+                            'Delivery recorded at',
+                            _formatDate(_date(data['deliveredAt'])),
+                          ),
+                          if (isReceivingNgo) ...[
+                            const Text(
+                              'Review the received donation and record '
+                              'your NGO’s final decision.',
+                            ),
+                            const SizedBox(height: 16),
+                            Wrap(
+                              spacing: 12,
+                              runSpacing: 12,
+                              children: [
+                                FilledButton.icon(
+                                  onPressed: _isAnyFlowOpen
+                                      ? null
+                                      : () =>
+                                          _showDeliveryReviewDialog(
+                                            accepted: true,
+                                          ),
+                                  icon: const Icon(Icons.check_circle),
+                                  label: const Text('Accept delivery'),
+                                ),
+                                OutlinedButton.icon(
+                                  onPressed: _isAnyFlowOpen
+                                      ? null
+                                      : () =>
+                                          _showDeliveryReviewDialog(
+                                            accepted: false,
+                                          ),
+                                  icon: const Icon(Icons.cancel),
+                                  label: const Text('Reject delivery'),
+                                ),
+                              ],
+                            ),
+                          ] else
+                            const Text(
+                              'Awaiting review by the receiving NGO.',
+                            ),
+                        ] else if (status == 'accepted') ...[
+                          _field(
+                            'Accepted at',
+                            _formatDate(_date(data['acceptedAt'])),
+                          ),
+                          const Text(
+                            'The receiving NGO accepted this delivery.',
+                          ),
+                        ] else if (status == 'rejected') ...[
+                          _field(
+                            'Rejected at',
+                            _formatDate(_date(data['rejectedAt'])),
+                          ),
+                          const Text(
+                            'The receiving NGO rejected this delivery.',
+                          ),
+                        ] else
+                          const Text(
+                            'Delivery confirmation is available '
+                            'only after pickup has been recorded.',
+                          ),
+                      ],
+                    ),
+
+                    if (deliveryHandover != null)
+                      _section(
+                        'Delivery handover record',
+                        [
+                          _field(
+                            'Handover recorded at',
+                            _formatDate(
+                              _date(deliveryHandover['confirmedAt']),
+                            ),
+                          ),
+                          _field(
+                            'Handover notes',
+                            _text(
+                              deliveryHandover['notes'],
+                              'No handover notes recorded',
+                            ),
+                          ),
+                        ],
+                      ),
+
+                    if (ngoReview != null)
+                      _section(
+                        'NGO delivery review record',
+                        [
+                          _field(
+                            'Decision',
+                            _text(ngoReview['decision'], 'Not recorded'),
+                          ),
+                          _field(
+                            'Reason or notes',
+                            _text(
+                              ngoReview['reason'],
+                              'No review notes recorded',
+                            ),
+                          ),
+                          _field(
+                            'Reviewed at',
+                            _formatDate(
+                              _date(ngoReview['reviewedAt']),
+                            ),
+                          ),
+                        ],
+                      ),
 
                     const Padding(
                       padding: EdgeInsets.only(bottom: 24),
@@ -1079,6 +1248,161 @@ class _VolunteerTaskDetailsScreenState
                 );
               },
             ),
+    );
+  }
+}
+
+class _TaskActionDialog extends StatefulWidget {
+  final String title;
+  final String submitLabel;
+  final String progressText;
+  final List<String> information;
+  final String? notesLabel;
+  final bool requireNotes;
+  final Future<void> Function(String notes) onSubmit;
+  final String Function(Object exception) describeError;
+
+  const _TaskActionDialog({
+    required this.title,
+    required this.submitLabel,
+    required this.progressText,
+    required this.information,
+    required this.onSubmit,
+    required this.describeError,
+    this.notesLabel,
+    this.requireNotes = false,
+  });
+
+  @override
+  State<_TaskActionDialog> createState() => _TaskActionDialogState();
+}
+
+class _TaskActionDialogState extends State<_TaskActionDialog> {
+  final TextEditingController _notesController =
+      TextEditingController();
+
+  bool _isSubmitting = false;
+  String? _submissionError;
+
+  @override
+  void dispose() {
+    _notesController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _submit() async {
+    if (_isSubmitting) {
+      return;
+    }
+
+    final notes = _notesController.text.trim();
+
+    if (widget.requireNotes && notes.isEmpty) {
+      setState(() {
+        _submissionError = 'Please enter a rejection reason.';
+      });
+      return;
+    }
+
+    if (notes.length > 500) {
+      setState(() {
+        _submissionError = 'Notes must contain 500 characters or fewer.';
+      });
+      return;
+    }
+
+    setState(() {
+      _isSubmitting = true;
+      _submissionError = null;
+    });
+
+    try {
+      await widget.onSubmit(notes);
+
+      if (!mounted) {
+        return;
+      }
+
+      Navigator.of(context).pop<bool>(true);
+    } catch (exception, stackTrace) {
+      debugPrint('Task action failed: $exception');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _isSubmitting = false;
+        _submissionError = widget.describeError(exception);
+      });
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return PopScope<bool>(
+      canPop: !_isSubmitting,
+      child: AlertDialog(
+        title: Text(widget.title),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              for (final paragraph in widget.information)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 12),
+                  child: Text(paragraph),
+                ),
+              if (widget.notesLabel != null)
+                TextField(
+                  controller: _notesController,
+                  enabled: !_isSubmitting,
+                  minLines: 2,
+                  maxLines: 4,
+                  maxLength: 500,
+                  decoration: InputDecoration(
+                    labelText: widget.notesLabel,
+                    border: const OutlineInputBorder(),
+                  ),
+                ),
+              if (_submissionError != null) ...[
+                const SizedBox(height: 16),
+                Text(
+                  _submissionError!,
+                  style: TextStyle(
+                    color: Colors.red.shade700,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              if (_isSubmitting) ...[
+                const SizedBox(height: 20),
+                const Center(
+                  child: CircularProgressIndicator(),
+                ),
+                const SizedBox(height: 12),
+                Text(widget.progressText),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: _isSubmitting
+                ? null
+                : () => Navigator.of(context).pop<bool>(false),
+            child: const Text('Close'),
+          ),
+          FilledButton(
+            onPressed: _isSubmitting ? null : _submit,
+            child: Text(
+              _isSubmitting ? 'Recording...' : widget.submitLabel,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
