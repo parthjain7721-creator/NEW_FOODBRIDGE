@@ -2,6 +2,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import 'create_donation_screen.dart';
+import 'donor_donation_history_screen.dart';
 import 'donor_pickup_confirmations_screen.dart';
 
 class DonorDashboardScreen extends StatefulWidget {
@@ -30,9 +31,10 @@ class _DonorDashboardScreenState
 
       // AuthGate handles the transition back to Login.
       // Do not push a separate LoginScreen here.
-    } on FirebaseAuthException catch (error, stackTrace) {
+    } on FirebaseAuthException catch (exception, stackTrace) {
       debugPrint(
-        'Donor logout failed: ${error.code} - ${error.message}',
+        'Donor logout failed: '
+        '${exception.code} - ${exception.message}',
       );
       debugPrintStack(stackTrace: stackTrace);
 
@@ -41,10 +43,11 @@ class _DonorDashboardScreenState
       }
 
       _showError(
-        'Unable to sign out. Please try again. (${error.code})',
+        'Unable to sign out. Please try again. '
+        '(${exception.code})',
       );
-    } catch (error, stackTrace) {
-      debugPrint('Unexpected donor logout error: $error');
+    } catch (exception, stackTrace) {
+      debugPrint('Unexpected donor logout error: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
@@ -85,7 +88,23 @@ class _DonorDashboardScreenState
     );
   }
 
+  void _openDonationHistory() {
+    if (_isSigningOut) {
+      return;
+    }
+
+    Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => const DonorDonationHistoryScreen(),
+      ),
+    );
+  }
+
   void _showError(String message) {
+    if (!mounted) {
+      return;
+    }
+
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -97,12 +116,70 @@ class _DonorDashboardScreenState
       );
   }
 
+  Widget _dashboardCard({
+    required IconData icon,
+    required String title,
+    required String description,
+    required String buttonLabel,
+    required IconData buttonIcon,
+    required VoidCallback onPressed,
+    String? additionalInformation,
+    bool primary = false,
+  }) {
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(
+              icon,
+              size: 48,
+              color: const Color(0xFF356B4D),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              style: Theme.of(context).textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text(description),
+            if (additionalInformation != null) ...[
+              const SizedBox(height: 12),
+              Text(additionalInformation),
+            ],
+            const SizedBox(height: 20),
+            SizedBox(
+              width: double.infinity,
+              child: primary
+                  ? ElevatedButton.icon(
+                      onPressed: _isSigningOut ? null : onPressed,
+                      icon: Icon(buttonIcon),
+                      label: Text(buttonLabel),
+                    )
+                  : OutlinedButton.icon(
+                      onPressed: _isSigningOut ? null : onPressed,
+                      icon: Icon(buttonIcon),
+                      label: Text(buttonLabel),
+                    ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Donor Dashboard'),
         actions: [
+          IconButton(
+            tooltip: 'Donation history',
+            onPressed: _isSigningOut ? null : _openDonationHistory,
+            icon: const Icon(Icons.history),
+          ),
           IconButton(
             tooltip: 'Pickup confirmations',
             onPressed:
@@ -134,98 +211,62 @@ class _DonorDashboardScreenState
             ),
             const SizedBox(height: 8),
             Text(
-              'Share surplus food and coordinate its collection '
-              'before the pickup window closes.',
+              'Share surplus food, coordinate collection, '
+              'and follow your donation through delivery '
+              'and NGO review.',
               style: Theme.of(context).textTheme.bodyLarge,
             ),
             const SizedBox(height: 28),
 
-            // Donation creation.
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(
-                      Icons.volunteer_activism_outlined,
-                      size: 48,
-                      color: Color(0xFF356B4D),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Create a Donation Passport',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Add food details, quantity, storage information, '
-                      'packaging condition, allergens, and preparation time.',
-                    ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      child: ElevatedButton.icon(
-                        onPressed:
-                            _isSigningOut ? null : _openCreateDonation,
-                        icon: const Icon(Icons.add_circle_outline),
-                        label: const Text('Create donation'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            _dashboardCard(
+              icon: Icons.volunteer_activism_outlined,
+              title: 'Create a Donation Passport',
+              description:
+                  'Add food details, quantity, storage information, '
+                  'packaging condition, allergens, and preparation time.',
+              buttonLabel: 'Create donation',
+              buttonIcon: Icons.add_circle_outline,
+              onPressed: _openCreateDonation,
+              primary: true,
             ),
 
             const SizedBox(height: 20),
 
-            // Donor confirmation for claimed donations.
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const Icon(
-                      Icons.event_available_outlined,
-                      size: 48,
-                      color: Color(0xFF356B4D),
-                    ),
-                    const SizedBox(height: 16),
-                    Text(
-                      'Confirm pickup arrangements',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const SizedBox(height: 8),
-                    const Text(
-                      'Review donations claimed by NGOs, check the '
-                      'planned pickup time, and confirm that the '
-                      'donation is still available for handover.',
-                    ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      'The NGO must confirm receiving capacity and '
-                      'pickup time before you can confirm the arrangement.',
-                    ),
-                    const SizedBox(height: 20),
-                    SizedBox(
-                      width: double.infinity,
-                      child: OutlinedButton.icon(
-                        onPressed: _isSigningOut
-                            ? null
-                            : _openPickupConfirmations,
-                        icon: const Icon(Icons.check_circle_outline),
-                        label: const Text('View pickup confirmations'),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
+            _dashboardCard(
+              icon: Icons.event_available_outlined,
+              title: 'Confirm pickup arrangements',
+              description:
+                  'Review donations claimed by NGOs, check the '
+                  'planned pickup time, and confirm that the '
+                  'donation is still available for handover.',
+              additionalInformation:
+                  'The NGO must confirm receiving capacity and '
+                  'pickup time before you can confirm the arrangement.',
+              buttonLabel: 'View pickup confirmations',
+              buttonIcon: Icons.check_circle_outline,
+              onPressed: _openPickupConfirmations,
             ),
 
             const SizedBox(height: 20),
 
-            // Workflow explanation.
+            _dashboardCard(
+              icon: Icons.history,
+              title: 'Track your donations',
+              description:
+                  'View your donation history and expand a donation '
+                  'to see its recorded progress: NGO claim, pickup '
+                  'confirmations, volunteer assignment, collection, '
+                  'delivery, and the NGO’s final decision.',
+              additionalInformation:
+                  'Use the history filters to view active donations, '
+                  'accepted deliveries, or other closed donations.',
+              buttonLabel: 'My donation history',
+              buttonIcon: Icons.receipt_long_outlined,
+              onPressed: _openDonationHistory,
+            ),
+
+            const SizedBox(height: 20),
+
             Card(
               child: Padding(
                 padding: const EdgeInsets.all(20),
@@ -233,7 +274,7 @@ class _DonorDashboardScreenState
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'How collection works',
+                      'How donation and delivery work',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const SizedBox(height: 12),
@@ -242,8 +283,15 @@ class _DonorDashboardScreenState
                       '2. An NGO claims the donation.\n\n'
                       '3. The NGO confirms capacity and pickup time.\n\n'
                       '4. You confirm the pickup arrangement.\n\n'
-                      '5. Volunteer assignment and pickup verification '
-                      'will follow in the next module.',
+                      '5. A volunteer accepts the pickup task.\n\n'
+                      '6. The volunteer matches the Donation Passport '
+                      'QR and records the pickup inspection.\n\n'
+                      '7. After collection, the volunteer records '
+                      'delivery handover to the receiving NGO.\n\n'
+                      '8. The receiving NGO accepts or rejects '
+                      'the delivery.\n\n'
+                      '9. View the saved progress and final decision '
+                      'in My donation history.',
                     ),
                   ],
                 ),
