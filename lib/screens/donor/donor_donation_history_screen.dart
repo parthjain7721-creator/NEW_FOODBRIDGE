@@ -18,6 +18,12 @@ class _DonorDonationHistoryScreenState
 
   Stream<QuerySnapshot<Map<String, dynamic>>>? _donationsStream;
 
+  final Set<String> _expandedDonationIds = <String>{};
+
+  final ScrollController _scrollController = ScrollController(
+    keepScrollOffset: false,
+  );
+
   String? _uid;
   String _filter = 'all';
 
@@ -34,6 +40,8 @@ class _DonorDonationHistoryScreenState
       }
 
       setState(() {
+        _expandedDonationIds.clear();
+        _filter = 'all';
         _connect(user?.uid);
       });
     });
@@ -42,6 +50,7 @@ class _DonorDonationHistoryScreenState
   @override
   void dispose() {
     _authSubscription?.cancel();
+    _scrollController.dispose();
     super.dispose();
   }
 
@@ -60,6 +69,31 @@ class _DonorDonationHistoryScreenState
     setState(() {
       _connect(FirebaseAuth.instance.currentUser?.uid);
     });
+  }
+
+  void _toggleDonation(String donationId) {
+    setState(() {
+      if (_expandedDonationIds.contains(donationId)) {
+        _expandedDonationIds.remove(donationId);
+      } else {
+        _expandedDonationIds.add(donationId);
+      }
+    });
+  }
+
+  void _changeFilter(String? value) {
+    if (value == null || value == _filter) {
+      return;
+    }
+
+    setState(() {
+      _filter = value;
+      _expandedDonationIds.clear();
+    });
+
+    if (_scrollController.hasClients) {
+      _scrollController.jumpTo(0);
+    }
   }
 
   String _text(dynamic value, String fallback) {
@@ -159,7 +193,7 @@ class _DonorDonationHistoryScreenState
 
   Widget _detail(String label, String value) {
     return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
+      padding: const EdgeInsets.only(bottom: 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -170,25 +204,29 @@ class _DonorDonationHistoryScreenState
               fontSize: 12,
             ),
           ),
-          const SizedBox(height: 3),
-          SelectableText(value),
+          const SizedBox(height: 4),
+          Text(value),
         ],
       ),
     );
   }
 
-  Widget _event(String title, dynamic timestamp, Color color) {
+  Widget _event(
+    String title,
+    dynamic timestamp,
+    Color color,
+  ) {
     if (timestamp is! Timestamp) {
       return const SizedBox.shrink();
     }
 
     return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
+      padding: const EdgeInsets.only(bottom: 16),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Icon(
-            Icons.check_circle,
+            Icons.check_circle_outline,
             color: color,
             size: 20,
           ),
@@ -203,10 +241,129 @@ class _DonorDonationHistoryScreenState
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                const SizedBox(height: 3),
+                const SizedBox(height: 4),
                 Text(_formatDate(timestamp)),
               ],
             ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _donationDetails(
+    QueryDocumentSnapshot<Map<String, dynamic>> document,
+  ) {
+    final data = document.data();
+    final status = _text(data['status'], 'unknown');
+    final handover = _map(data['deliveryHandover']);
+    final review = _map(data['ngoDeliveryReview']);
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Divider(),
+          const SizedBox(height: 12),
+          _detail('Donation ID', document.id),
+          _detail(
+            'Receiving NGO ID',
+            _text(data['claimedByNgoId'], 'Not yet claimed'),
+          ),
+          _detail(
+            'Assigned volunteer ID',
+            _text(data['assignedVolunteerId'], 'Not yet assigned'),
+          ),
+          _detail(
+            'Pickup deadline',
+            _formatDate(data['pickupDeadline']),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            'Recorded progress',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 16),
+          _event(
+            'Donation posted',
+            data['postedAt'],
+            Colors.blue.shade700,
+          ),
+          _event(
+            'Claimed by NGO',
+            data['claimedAt'],
+            Colors.blue.shade700,
+          ),
+          _event(
+            'NGO confirmed pickup arrangements',
+            data['ngoPickupConfirmedAt'],
+            Colors.blue.shade700,
+          ),
+          _event(
+            'Donor confirmed pickup arrangements',
+            data['donorPickupConfirmedAt'],
+            Colors.blue.shade700,
+          ),
+          _event(
+            'Volunteer assigned',
+            data['volunteerAssignedAt'],
+            Colors.blue.shade700,
+          ),
+          _event(
+            'Pickup recorded',
+            data['pickedUpAt'],
+            Colors.blue.shade700,
+          ),
+          _event(
+            'Volunteer recorded delivery handover',
+            data['deliveredAt'],
+            Colors.blue.shade700,
+          ),
+          _event(
+            'Delivery accepted by NGO',
+            data['acceptedAt'],
+            Colors.green.shade700,
+          ),
+          _event(
+            'Delivery rejected by NGO',
+            data['rejectedAt'],
+            Colors.red.shade700,
+          ),
+          if (handover != null)
+            _detail(
+              'Delivery handover notes',
+              _text(
+                handover['notes'],
+                'No handover notes recorded',
+              ),
+            ),
+          if (review != null) ...[
+            _detail(
+              'NGO review decision',
+              _text(review['decision'], 'Not recorded'),
+            ),
+            _detail(
+              'NGO review reason or notes',
+              _text(
+                review['reason'],
+                'No reason or notes recorded',
+              ),
+            ),
+          ],
+          if (status == 'delivered')
+            const Padding(
+              padding: EdgeInsets.only(bottom: 12),
+              child: Text(
+                'The volunteer has recorded delivery. '
+                'The receiving NGO has not yet recorded '
+                'its final decision.',
+              ),
+            ),
+          const Text(
+            'This timeline displays saved workflow records. '
+            'It does not certify food safety.',
+            style: TextStyle(fontSize: 12),
           ),
         ],
       ),
@@ -218,8 +375,7 @@ class _DonorDonationHistoryScreenState
   ) {
     final data = document.data();
     final status = _text(data['status'], 'unknown');
-    final review = _map(data['ngoDeliveryReview']);
-    final handover = _map(data['deliveryHandover']);
+    final isExpanded = _expandedDonationIds.contains(document.id);
 
     final Object? quantity = data['quantity'];
 
@@ -229,144 +385,53 @@ class _DonorDonationHistoryScreenState
             : 'Quantity not recorded';
 
     return Card(
+      key: ValueKey('donation-${document.id}'),
       margin: const EdgeInsets.only(bottom: 12),
-      child: ExpansionTile(
-        key: PageStorageKey('${_uid}_${document.id}'),
-        title: Text(
-          _text(data['foodCategory'], 'Food donation'),
-        ),
-        subtitle: Padding(
-          padding: const EdgeInsets.only(top: 6),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(quantityLabel),
-              const SizedBox(height: 4),
-              Text(
-                _statusLabel(status),
-                style: TextStyle(
-                  color: _statusColor(status),
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                'Posted: ${_formatDate(data['postedAt'])}',
-              ),
-            ],
-          ),
-        ),
-        childrenPadding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          const Divider(),
-          Align(
-            alignment: Alignment.centerLeft,
+          Padding(
+            padding: const EdgeInsets.all(20),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                _detail('Donation ID', document.id),
-                _detail(
-                  'Receiving NGO ID',
-                  _text(data['claimedByNgoId'], 'Not yet claimed'),
-                ),
-                _detail(
-                  'Assigned volunteer ID',
-                  _text(
-                    data['assignedVolunteerId'],
-                    'Not yet assigned',
-                  ),
-                ),
-                _detail(
-                  'Pickup deadline',
-                  _formatDate(data['pickupDeadline']),
-                ),
-                const SizedBox(height: 8),
                 Text(
-                  'Recorded progress',
+                  _text(data['foodCategory'], 'Food donation'),
                   style: Theme.of(context).textTheme.titleMedium,
                 ),
-                const SizedBox(height: 16),
-                _event(
-                  'Donation posted',
-                  data['postedAt'],
-                  Colors.blue.shade700,
-                ),
-                _event(
-                  'Claimed by NGO',
-                  data['claimedAt'],
-                  Colors.blue.shade700,
-                ),
-                _event(
-                  'NGO confirmed pickup arrangements',
-                  data['ngoPickupConfirmedAt'],
-                  Colors.blue.shade700,
-                ),
-                _event(
-                  'Donor confirmed pickup arrangements',
-                  data['donorPickupConfirmedAt'],
-                  Colors.blue.shade700,
-                ),
-                _event(
-                  'Volunteer assigned',
-                  data['volunteerAssignedAt'],
-                  Colors.blue.shade700,
-                ),
-                _event(
-                  'Pickup recorded',
-                  data['pickedUpAt'],
-                  Colors.blue.shade700,
-                ),
-                _event(
-                  'Volunteer recorded delivery handover',
-                  data['deliveredAt'],
-                  Colors.blue.shade700,
-                ),
-                _event(
-                  'Delivery accepted by NGO',
-                  data['acceptedAt'],
-                  Colors.green.shade700,
-                ),
-                _event(
-                  'Delivery rejected by NGO',
-                  data['rejectedAt'],
-                  Colors.red.shade700,
-                ),
-                if (handover != null)
-                  _detail(
-                    'Delivery handover notes',
-                    _text(
-                      handover['notes'],
-                      'No handover notes recorded',
-                    ),
+                const SizedBox(height: 8),
+                Text(quantityLabel),
+                const SizedBox(height: 6),
+                Text(
+                  _statusLabel(status),
+                  style: TextStyle(
+                    color: _statusColor(status),
+                    fontWeight: FontWeight.w600,
                   ),
-                if (review != null) ...[
-                  _detail(
-                    'NGO review decision',
-                    _text(review['decision'], 'Not recorded'),
-                  ),
-                  _detail(
-                    'NGO review reason or notes',
-                    _text(
-                      review['reason'],
-                      'No reason or notes recorded',
-                    ),
-                  ),
-                ],
-                if (status == 'delivered')
-                  const Text(
-                    'The volunteer has recorded delivery. '
-                    'The receiving NGO has not yet recorded '
-                    'its final decision.',
-                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  'Posted: ${_formatDate(data['postedAt'])}',
+                ),
                 const SizedBox(height: 12),
-                const Text(
-                  'This timeline displays saved workflow records. '
-                  'It does not certify food safety.',
-                  style: TextStyle(fontSize: 12),
+                OutlinedButton.icon(
+                  onPressed: () => _toggleDonation(document.id),
+                  icon: Icon(
+                    isExpanded
+                        ? Icons.expand_less
+                        : Icons.expand_more,
+                  ),
+                  label: Text(
+                    isExpanded
+                        ? 'Hide donation details'
+                        : 'View donation details',
+                  ),
                 ),
               ],
             ),
           ),
+          if (isExpanded) _donationDetails(document),
         ],
       ),
     );
@@ -397,6 +462,7 @@ class _DonorDonationHistoryScreenState
                 Padding(
                   padding: const EdgeInsets.all(16),
                   child: DropdownButtonFormField<String>(
+                    key: ValueKey('history-filter-$_uid-$_filter'),
                     initialValue: _filter,
                     decoration: const InputDecoration(
                       labelText: 'Show donations',
@@ -420,21 +486,13 @@ class _DonorDonationHistoryScreenState
                         child: Text('Rejected / cancelled / expired'),
                       ),
                     ],
-                    onChanged: (value) {
-                      if (value == null) {
-                        return;
-                      }
-
-                      setState(() {
-                        _filter = value;
-                      });
-                    },
+                    onChanged: _changeFilter,
                   ),
                 ),
                 Expanded(
                   child: StreamBuilder<
                       QuerySnapshot<Map<String, dynamic>>>(
-                    key: ValueKey(_uid),
+                    key: ValueKey('history-stream-$_uid'),
                     stream: _donationsStream,
                     builder: (context, snapshot) {
                       if (snapshot.hasError) {
@@ -479,16 +537,18 @@ class _DonorDonationHistoryScreenState
                           .toList();
 
                       documents.sort((first, second) {
-                        final firstDate =
-                            _date(first.data()['postedAt']);
-                        final secondDate =
-                            _date(second.data()['postedAt']);
+                        final firstTime =
+                            _date(first.data()['postedAt'])
+                                    ?.millisecondsSinceEpoch ??
+                                0;
+
+                        final secondTime =
+                            _date(second.data()['postedAt'])
+                                    ?.millisecondsSinceEpoch ??
+                                0;
 
                         final comparison =
-                            (secondDate?.millisecondsSinceEpoch ?? 0)
-                                .compareTo(
-                          firstDate?.millisecondsSinceEpoch ?? 0,
-                        );
+                            secondTime.compareTo(firstTime);
 
                         return comparison != 0
                             ? comparison
@@ -504,6 +564,7 @@ class _DonorDonationHistoryScreenState
                       }
 
                       return ListView.builder(
+                        controller: _scrollController,
                         padding: const EdgeInsets.fromLTRB(
                           16,
                           0,
