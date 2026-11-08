@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import 'volunteer_activity_screen.dart';
 import 'volunteer_task_details_screen.dart';
 
 class VolunteerDashboardScreen extends StatefulWidget {
@@ -22,23 +23,40 @@ class _VolunteerDashboardScreenState
   Stream<QuerySnapshot<Map<String, dynamic>>>? _availableStream;
   Stream<QuerySnapshot<Map<String, dynamic>>>? _assignedStream;
 
+  StreamSubscription<User?>? _authSubscription;
+
   Timer? _timer;
   DateTime _now = DateTime.now();
 
+  String? _connectedUid;
   String? _acceptingId;
+
   bool _isSigningOut = false;
   bool _isAcceptanceDialogOpen = false;
+  bool _isOpeningScreen = false;
 
   bool get _isBusy =>
       _acceptingId != null ||
       _isSigningOut ||
-      _isAcceptanceDialogOpen;
+      _isAcceptanceDialogOpen ||
+      _isOpeningScreen;
 
   @override
   void initState() {
     super.initState();
 
     _connectStreams();
+
+    _authSubscription = _auth.authStateChanges().listen((user) {
+      if (!mounted || user?.uid == _connectedUid) {
+        return;
+      }
+
+      setState(() {
+        _now = DateTime.now();
+        _connectStreams();
+      });
+    });
 
     _timer = Timer.periodic(
       const Duration(seconds: 1),
@@ -57,11 +75,14 @@ class _VolunteerDashboardScreenState
   @override
   void dispose() {
     _timer?.cancel();
+    _authSubscription?.cancel();
     super.dispose();
   }
 
   void _connectStreams() {
     final String? uid = _auth.currentUser?.uid;
+
+    _connectedUid = uid;
 
     if (uid == null) {
       _availableStream = null;
@@ -83,10 +104,18 @@ class _VolunteerDashboardScreenState
   }
 
   void _retryStreams() {
+    if (_isBusy) {
+      return;
+    }
+
     setState(() {
       _now = DateTime.now();
       _connectStreams();
     });
+  }
+
+  bool _sameAccount(String uid) {
+    return mounted && _auth.currentUser?.uid == uid;
   }
 
   DateTime? _date(dynamic value) {
@@ -138,9 +167,9 @@ class _VolunteerDashboardScreenState
       case 'volunteer_assigned':
         return 'Assigned to you';
       case 'picked_up':
-        return 'Picked up';
+        return 'Picked up — awaiting delivery';
       case 'delivered':
-        return 'Delivered';
+        return 'Delivered — awaiting NGO review';
       case 'accepted':
         return 'Accepted by NGO';
       case 'rejected':
@@ -224,6 +253,13 @@ class _VolunteerDashboardScreenState
       return;
     }
 
+    final String? uid = _auth.currentUser?.uid;
+
+    if (uid == null) {
+      _message('Please log in again.', isError: true);
+      return;
+    }
+
     setState(() {
       _isAcceptanceDialogOpen = true;
     });
@@ -244,11 +280,13 @@ class _VolunteerDashboardScreenState
           ),
           actions: [
             TextButton(
-              onPressed: () => Navigator.pop(dialogContext, false),
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop<bool>(false),
               child: const Text('Cancel'),
             ),
             FilledButton(
-              onPressed: () => Navigator.pop(dialogContext, true),
+              onPressed: () =>
+                  Navigator.of(dialogContext).pop<bool>(true),
               child: const Text('Accept task'),
             ),
           ],
@@ -266,10 +304,11 @@ class _VolunteerDashboardScreenState
       return;
     }
 
-    final User? user = _auth.currentUser;
-
-    if (user == null) {
-      _message('Please log in again.', isError: true);
+    if (!_sameAccount(uid)) {
+      _message(
+        'Your account changed. Please start again.',
+        isError: true,
+      );
       return;
     }
 
@@ -284,17 +323,24 @@ class _VolunteerDashboardScreenState
           _firestore.collection('donations').doc(donationId);
 
       final DocumentReference<Map<String, dynamic>> profileRef =
-          _firestore.collection('users').doc(user.uid);
+          _firestore.collection('users').doc(uid);
 
-      await _firestore.runTransaction((transaction) async {
+      await _firestore.runTransaction<void>((transaction) async {
         // Complete all reads before writing.
         final profileSnapshot = await transaction.get(profileRef);
         final donationSnapshot = await transaction.get(donationRef);
 
+        if (_auth.currentUser?.uid != uid) {
+          throw StateError(
+            'Your account changed. Please start again.',
+          );
+        }
+
         final Map<String, dynamic>? profile = profileSnapshot.data();
 
-        if (_text(profile?['role'], '').toLowerCase() != 'volunteer' ||
-            profile?['isActive'] == false) {
+        if (profile == null ||
+            profile['role'] != 'volunteer' ||
+            profile['isActive'] == false) {
           throw StateError(
             'An active volunteer profile is required.',
           );
@@ -323,7 +369,7 @@ class _VolunteerDashboardScreenState
 
         transaction.update(donationRef, {
           'status': 'volunteer_assigned',
-          'assignedVolunteerId': user.uid,
+          'assignedVolunteerId': uid,
           'volunteerAssignmentStatus': 'assigned',
           'volunteerAssignedAt': FieldValue.serverTimestamp(),
           'updatedAt': FieldValue.serverTimestamp(),
@@ -331,33 +377,39 @@ class _VolunteerDashboardScreenState
       });
 
       accepted = true;
-    } on FirebaseException catch (error, stackTrace) {
+    } on FirebaseException catch (exception, stackTrace) {
       debugPrint(
         'Volunteer assignment failed: '
-        '${error.code} - ${error.message}',
+        '${exception.code} - ${exception.message}',
       );
       debugPrintStack(stackTrace: stackTrace);
 
-      if (mounted) {
+      if (_sameAccount(uid)) {
         _message(
-          error.code == 'permission-denied'
+          exception.code == 'permission-denied'
               ? 'Assignment was denied. The task may no longer be '
                   'available, or its requirements are not satisfied.'
-              : 'Unable to accept pickup. (${error.code})',
+              : 'Unable to confirm the assignment result. '
+                  'Check My tasks before retrying. '
+                  '(${exception.code})',
           isError: true,
         );
       }
-    } on StateError catch (error) {
-      if (mounted) {
-        _message(error.message.toString(), isError: true);
+    } on StateError catch (exception) {
+      if (_sameAccount(uid)) {
+        _message(
+          exception.message.toString(),
+          isError: true,
+        );
       }
-    } catch (error, stackTrace) {
-      debugPrint('Unexpected assignment error: $error');
+    } catch (exception, stackTrace) {
+      debugPrint('Unexpected assignment error: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
-      if (mounted) {
+      if (_sameAccount(uid)) {
         _message(
-          'Unable to accept pickup. Please try again.',
+          'Unable to confirm the assignment result. '
+          'Check My tasks before retrying.',
           isError: true,
         );
       }
@@ -369,27 +421,55 @@ class _VolunteerDashboardScreenState
       }
     }
 
-    if (!mounted || !accepted) {
+    if (!accepted || !_sameAccount(uid)) {
       return;
     }
 
     _message('Pickup accepted. Review your assigned task details.');
 
-    _openTaskDetails(donationId);
+    await _openTaskDetails(donationId);
   }
 
-  void _openTaskDetails(String donationId) {
+  Future<void> _openScreen(Widget screen) async {
     if (_isBusy) {
       return;
     }
 
-    Navigator.of(context).push<void>(
-      MaterialPageRoute<void>(
-        builder: (_) => VolunteerTaskDetailsScreen(
-          donationId: donationId,
+    if (_auth.currentUser == null) {
+      _message('Please log in again.', isError: true);
+      return;
+    }
+
+    setState(() {
+      _isOpeningScreen = true;
+    });
+
+    try {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => screen,
         ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isOpeningScreen = false;
+          _now = DateTime.now();
+        });
+      }
+    }
+  }
+
+  Future<void> _openTaskDetails(String donationId) async {
+    await _openScreen(
+      VolunteerTaskDetailsScreen(
+        donationId: donationId,
       ),
     );
+  }
+
+  Future<void> _openActivity() async {
+    await _openScreen(const VolunteerActivityScreen());
   }
 
   Future<void> _logout() async {
@@ -405,8 +485,8 @@ class _VolunteerDashboardScreenState
       await _auth.signOut();
 
       // AuthGate handles the transition to Login.
-    } catch (error, stackTrace) {
-      debugPrint('Volunteer logout failed: $error');
+    } catch (exception, stackTrace) {
+      debugPrint('Volunteer logout failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
       if (mounted) {
@@ -425,6 +505,10 @@ class _VolunteerDashboardScreenState
   }
 
   void _message(String message, {bool isError = false}) {
+    if (!mounted) {
+      return;
+    }
+
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -437,6 +521,47 @@ class _VolunteerDashboardScreenState
       );
   }
 
+  Widget _buildActivityCard() {
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                const Icon(
+                  Icons.insights_outlined,
+                  size: 30,
+                  color: Color(0xFF356B4D),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'My volunteer activity',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'View assigned tasks, delivery outcomes, '
+              'and your recorded volunteer activity.',
+            ),
+            const SizedBox(height: 12),
+            OutlinedButton.icon(
+              onPressed: _isBusy ? null : _openActivity,
+              icon: const Icon(Icons.history),
+              label: const Text('View my activity'),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return DefaultTabController(
@@ -445,6 +570,11 @@ class _VolunteerDashboardScreenState
         appBar: AppBar(
           title: const Text('Volunteer Dashboard'),
           actions: [
+            IconButton(
+              tooltip: 'My volunteer activity',
+              onPressed: _isBusy ? null : _openActivity,
+              icon: const Icon(Icons.insights_outlined),
+            ),
             IconButton(
               tooltip: 'Logout',
               onPressed: _isBusy ? null : _logout,
@@ -470,11 +600,24 @@ class _VolunteerDashboardScreenState
             ],
           ),
         ),
-        body: TabBarView(
-          children: [
-            _buildList(_availableStream, available: true),
-            _buildList(_assignedStream, available: false),
-          ],
+        body: SafeArea(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                child: _buildActivityCard(),
+              ),
+              const SizedBox(height: 8),
+              Expanded(
+                child: TabBarView(
+                  children: [
+                    _buildList(_availableStream, available: true),
+                    _buildList(_assignedStream, available: false),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -491,6 +634,9 @@ class _VolunteerDashboardScreenState
     }
 
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      key: ValueKey(
+        '${_connectedUid}_${available ? 'available' : 'assigned'}',
+      ),
       stream: stream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
@@ -500,9 +646,9 @@ class _VolunteerDashboardScreenState
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Text(
-                    'Unable to load pickup tasks.\n\n'
-                    '${snapshot.error}',
+                  const Text(
+                    'Unable to load pickup tasks. '
+                    'Check your connection and volunteer account access.',
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 16),
@@ -544,7 +690,11 @@ class _VolunteerDashboardScreenState
             return -1;
           }
 
-          return a.compareTo(b);
+          final int comparison = a.compareTo(b);
+
+          return comparison != 0
+              ? comparison
+              : first.id.compareTo(second.id);
         });
 
         if (documents.isEmpty) {
@@ -608,6 +758,9 @@ class _VolunteerDashboardScreenState
     final Color countdownColor = _deadlineColor(deadline);
 
     return Card(
+      key: ValueKey(
+        '${available ? 'opportunity' : 'task'}-${document.id}',
+      ),
       margin: const EdgeInsets.only(bottom: 16),
       child: Padding(
         padding: const EdgeInsets.all(18),
@@ -619,7 +772,7 @@ class _VolunteerDashboardScreenState
               style: Theme.of(context).textTheme.titleLarge,
             ),
             const SizedBox(height: 12),
-            SelectableText('Donation ID: ${document.id}'),
+            Text('Donation ID: ${document.id}'),
             const SizedBox(height: 8),
             Text('Quantity: ${_quantityLabel(data['quantity'])}'),
             const SizedBox(height: 8),
