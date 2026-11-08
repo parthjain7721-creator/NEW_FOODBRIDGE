@@ -1,4 +1,4 @@
-
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
@@ -18,28 +18,42 @@ class CreateDonationScreen extends StatefulWidget {
 class _CreateDonationScreenState
     extends State<CreateDonationScreen> {
   final GlobalKey<FormState> _formKey = GlobalKey<FormState>();
+
   final FirestoreService _firestoreService = FirestoreService();
 
   final TextEditingController _quantityController =
       TextEditingController();
+
   final TextEditingController _allergensController =
       TextEditingController();
 
-  final List<String> _foodCategories = [
+  final TextEditingController _addressController =
+      TextEditingController();
+
+  final TextEditingController _cityController =
+      TextEditingController();
+
+  final TextEditingController _latitudeController =
+      TextEditingController();
+
+  final TextEditingController _longitudeController =
+      TextEditingController();
+
+  static const List<String> _foodCategories = [
     'Cooked meal',
     'Bakery',
     'Fruits and vegetables',
     'Packaged food',
   ];
 
-  final List<String> _storageMethods = [
+  static const List<String> _storageMethods = [
     'room_temperature',
     'refrigerated',
     'frozen',
     'unknown',
   ];
 
-  final List<String> _packagingStates = [
+  static const List<String> _packagingStates = [
     'sealed',
     'intact',
     'damaged',
@@ -60,16 +74,33 @@ class _CreateDonationScreenState
   void dispose() {
     _quantityController.dispose();
     _allergensController.dispose();
+    _addressController.dispose();
+    _cityController.dispose();
+    _latitudeController.dispose();
+    _longitudeController.dispose();
     super.dispose();
   }
 
   Future<void> _selectPreparationTime() async {
+    if (_isLoading) {
+      return;
+    }
+
     final DateTime now = DateTime.now();
+
+    final DateTime earliestDate =
+        now.subtract(const Duration(days: 30));
+
+    final DateTime initialDate = _preparedAt.isBefore(earliestDate)
+        ? earliestDate
+        : _preparedAt.isAfter(now)
+            ? now
+            : _preparedAt;
 
     final DateTime? selectedDate = await showDatePicker(
       context: context,
-      initialDate: _preparedAt,
-      firstDate: now.subtract(const Duration(days: 30)),
+      initialDate: initialDate,
+      firstDate: earliestDate,
       lastDate: now,
     );
 
@@ -94,7 +125,7 @@ class _CreateDonationScreenState
       selectedTime.minute,
     );
 
-    if (selectedDateTime.isAfter(now)) {
+    if (selectedDateTime.isAfter(DateTime.now())) {
       _showMessage(
         'Preparation time cannot be in the future.',
         Colors.orange.shade800,
@@ -107,20 +138,40 @@ class _CreateDonationScreenState
     });
   }
 
-  Future<void> _submitDonation() async {
-    if (_isLoading) {
-      return;
+  String? _validateCoordinate(
+    String? value, {
+    required bool latitude,
+  }) {
+    final double? coordinate = double.tryParse(
+      value?.trim() ?? '',
+    );
+
+    final double minimum = latitude ? -90 : -180;
+    final double maximum = latitude ? 90 : 180;
+
+    if (coordinate == null ||
+        !coordinate.isFinite ||
+        coordinate < minimum ||
+        coordinate > maximum) {
+      return latitude
+          ? 'Enter latitude from -90 to 90'
+          : 'Enter longitude from -180 to 180';
     }
 
-    if (!_formKey.currentState!.validate()) {
+    return null;
+  }
+
+  Future<void> _submitDonation() async {
+    if (_isLoading ||
+        !(_formKey.currentState?.validate() ?? false)) {
       return;
     }
 
     FocusScope.of(context).unfocus();
 
-    final User? user = FirebaseAuth.instance.currentUser;
+    final String? uid = FirebaseAuth.instance.currentUser?.uid;
 
-    if (user == null) {
+    if (uid == null) {
       _showMessage(
         'Your login session has expired. Please log in again.',
         Colors.red.shade700,
@@ -132,9 +183,26 @@ class _CreateDonationScreenState
       _quantityController.text.trim(),
     );
 
-    if (quantity == null || quantity <= 0) {
+    final double? latitude = double.tryParse(
+      _latitudeController.text.trim(),
+    );
+
+    final double? longitude = double.tryParse(
+      _longitudeController.text.trim(),
+    );
+
+    if (quantity == null ||
+        quantity <= 0 ||
+        latitude == null ||
+        longitude == null ||
+        !latitude.isFinite ||
+        !longitude.isFinite ||
+        latitude < -90 ||
+        latitude > 90 ||
+        longitude < -180 ||
+        longitude > 180) {
       _showMessage(
-        'Enter a valid quantity.',
+        'Check the quantity and pickup coordinates.',
         Colors.orange.shade800,
       );
       return;
@@ -150,23 +218,23 @@ class _CreateDonationScreenState
       return;
     }
 
-    final EligibilityResult eligibility =
-        EligibilityService.calculate(
-      preparedAt: _preparedAt,
-      now: now,
-      foodCategory: _foodCategory,
-      storageMethod: _storageMethod,
-      packagingState: _packagingState,
-    );
-
     setState(() {
       _isLoading = true;
     });
 
     try {
+      final EligibilityResult eligibility =
+          EligibilityService.calculate(
+        preparedAt: _preparedAt,
+        now: now,
+        foodCategory: _foodCategory,
+        storageMethod: _storageMethod,
+        packagingState: _packagingState,
+      );
+
       final DonationModel draftDonation = DonationModel(
         id: '',
-        donorId: user.uid,
+        donorId: uid,
         foodCategory: _foodCategory,
         storageMethod: _storageMethod,
         quantity: quantity,
@@ -179,70 +247,82 @@ class _CreateDonationScreenState
         packagingState: _packagingState,
         eligibilityStatus: eligibility.status,
         status: 'available',
+        pickupAddress: _addressController.text.trim(),
+        pickupCity: _cityController.text
+            .trim()
+            .replaceAll(RegExp(r'\s+'), ' ')
+            .toLowerCase(),
+        pickupLocation: GeoPoint(latitude, longitude),
       );
 
-      debugPrint(
-        'Creating donation for donor UID: ${user.uid}',
-      );
+      if (FirebaseAuth.instance.currentUser?.uid != uid) {
+        throw StateError(
+          'Your account changed. Please start again.',
+        );
+      }
 
       final String donationId =
-          await _firestoreService.createDonation(
-        draftDonation,
-      );
+          await _firestoreService.createDonation(draftDonation);
 
-      final DonationModel savedDonation = DonationModel(
-        id: donationId,
-        donorId: draftDonation.donorId,
-        foodCategory: draftDonation.foodCategory,
-        storageMethod: draftDonation.storageMethod,
-        quantity: draftDonation.quantity,
-        allergens: draftDonation.allergens,
-        preparedAt: draftDonation.preparedAt,
-        postedAt: draftDonation.postedAt,
-        pickupDeadline: draftDonation.pickupDeadline,
-        packagingState: draftDonation.packagingState,
-        eligibilityStatus: draftDonation.eligibilityStatus,
-        status: draftDonation.status,
-      );
-
-      if (!mounted) {
+      if (!mounted ||
+          FirebaseAuth.instance.currentUser?.uid != uid) {
         return;
       }
 
-      Navigator.pushReplacement(
-        context,
-        MaterialPageRoute(
+      final DonationModel savedDonation =
+          draftDonation.withId(donationId);
+
+      Navigator.of(context).pushReplacement<void, void>(
+        MaterialPageRoute<void>(
           builder: (_) => DonationPassportScreen(
             donation: savedDonation,
             explanation: eligibility.explanation,
           ),
         ),
       );
-    } on FirebaseException catch (error) {
+    } on FirebaseException catch (exception, stackTrace) {
       debugPrint(
-        'Donation Firestore error: '
-        '${error.code} - ${error.message}',
+        'Donation creation failed: '
+        '${exception.code} - ${exception.message}',
       );
+      debugPrintStack(stackTrace: stackTrace);
 
-      if (!mounted) {
+      if (!mounted ||
+          FirebaseAuth.instance.currentUser?.uid != uid) {
         return;
       }
 
       _showMessage(
-        'Firestore error: ${error.code}',
+        exception.code == 'permission-denied'
+            ? 'Firestore denied donation creation. '
+                'Publish the updated donation-creation rules '
+                'that allow and validate pickup location.'
+            : 'Unable to confirm donation creation. '
+                'Check donation history before retrying. '
+                '(${exception.code})',
         Colors.red.shade700,
       );
-    } catch (error) {
-      debugPrint(
-        'Unexpected donation creation error: $error',
-      );
-
+    } on StateError catch (exception) {
       if (!mounted) {
         return;
       }
 
       _showMessage(
-        'Unable to save donation: $error',
+        exception.message.toString(),
+        Colors.red.shade700,
+      );
+    } catch (exception, stackTrace) {
+      debugPrint('Unexpected donation creation error: $exception');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted ||
+          FirebaseAuth.instance.currentUser?.uid != uid) {
+        return;
+      }
+
+      _showMessage(
+        'Unable to confirm donation creation. '
+        'Check donation history before retrying.',
         Colors.red.shade700,
       );
     } finally {
@@ -255,6 +335,10 @@ class _CreateDonationScreenState
   }
 
   void _showMessage(String message, Color color) {
+    if (!mounted) {
+      return;
+    }
+
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
       ..showSnackBar(
@@ -262,7 +346,7 @@ class _CreateDonationScreenState
           content: Text(message),
           backgroundColor: color,
           behavior: SnackBarBehavior.floating,
-          duration: const Duration(seconds: 4),
+          duration: const Duration(seconds: 6),
         ),
       );
   }
@@ -300,185 +384,289 @@ class _CreateDonationScreenState
   String _formatDateTime(DateTime value) {
     final DateTime local = value.toLocal();
 
-    String twoDigits(int number) {
-      return number.toString().padLeft(2, '0');
-    }
+    String two(int number) => number.toString().padLeft(2, '0');
 
-    return '${local.day}/${twoDigits(local.month)}/${local.year} '
-        '${twoDigits(local.hour)}:${twoDigits(local.minute)}';
+    return '${two(local.day)}/${two(local.month)}/${local.year} '
+        '${two(local.hour)}:${two(local.minute)}';
+  }
+
+  Widget _dropdown({
+    required String value,
+    required String label,
+    required IconData icon,
+    required List<String> options,
+    required String Function(String) optionLabel,
+    required ValueChanged<String> onChanged,
+  }) {
+    return DropdownButtonFormField<String>(
+      initialValue: value,
+      isExpanded: true,
+      decoration: InputDecoration(
+        labelText: label,
+        prefixIcon: Icon(icon),
+      ),
+      items: options.map((option) {
+        return DropdownMenuItem<String>(
+          value: option,
+          child: Text(optionLabel(option)),
+        );
+      }).toList(),
+      onChanged: _isLoading
+          ? null
+          : (selected) {
+              if (selected != null) {
+                onChanged(selected);
+              }
+            },
+    );
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Create donation'),
-      ),
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(24),
-          child: Form(
-            key: _formKey,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  'Donation details',
-                  style: Theme.of(context).textTheme.headlineMedium,
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'FoodBridge calculates a transparent rescue status '
-                  'from your declarations.',
-                  style: Theme.of(context).textTheme.bodyMedium,
-                ),
-                const SizedBox(height: 28),
-                DropdownButtonFormField<String>(
-                  initialValue: _foodCategory,
-                  decoration: const InputDecoration(
-                    labelText: 'Food category',
-                    prefixIcon: Icon(Icons.restaurant_outlined),
+    return PopScope<void>(
+      canPop: !_isLoading,
+      child: Scaffold(
+        appBar: AppBar(
+          title: const Text('Create donation'),
+        ),
+        body: SafeArea(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Form(
+              key: _formKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'Donation details',
+                    style: Theme.of(context).textTheme.headlineMedium,
                   ),
-                  items: _foodCategories.map((category) {
-                    return DropdownMenuItem<String>(
-                      value: category,
-                      child: Text(category),
-                    );
-                  }).toList(),
-                  onChanged: _isLoading
-                      ? null
-                      : (value) {
-                          if (value == null) {
-                            return;
-                          }
-
-                          setState(() {
-                            _foodCategory = value;
-                          });
-                        },
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: _quantityController,
-                  keyboardType: TextInputType.number,
-                  textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(
-                    labelText: 'Quantity',
-                    hintText: 'Number of portions or packets',
-                    prefixIcon: Icon(Icons.inventory_2_outlined),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'FoodBridge calculates a transparent rescue status '
+                    'from your declarations.',
                   ),
-                  validator: (value) {
-                    final int? quantity = int.tryParse(
-                      value?.trim() ?? '',
-                    );
+                  const SizedBox(height: 28),
 
-                    if (quantity == null || quantity <= 0) {
-                      return 'Enter a valid quantity';
-                    }
-
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  initialValue: _storageMethod,
-                  decoration: const InputDecoration(
-                    labelText: 'Storage method',
-                    prefixIcon: Icon(Icons.kitchen_outlined),
+                  _dropdown(
+                    value: _foodCategory,
+                    label: 'Food category',
+                    icon: Icons.restaurant_outlined,
+                    options: _foodCategories,
+                    optionLabel: (value) => value,
+                    onChanged: (value) {
+                      setState(() {
+                        _foodCategory = value;
+                      });
+                    },
                   ),
-                  items: _storageMethods.map((method) {
-                    return DropdownMenuItem<String>(
-                      value: method,
-                      child: Text(_storageLabel(method)),
-                    );
-                  }).toList(),
-                  onChanged: _isLoading
-                      ? null
-                      : (value) {
-                          if (value == null) {
-                            return;
-                          }
+                  const SizedBox(height: 16),
 
-                          setState(() {
-                            _storageMethod = value;
-                          });
-                        },
-                ),
-                const SizedBox(height: 16),
-                DropdownButtonFormField<String>(
-                  initialValue: _packagingState,
-                  decoration: const InputDecoration(
-                    labelText: 'Packaging condition',
-                    prefixIcon: Icon(Icons.inventory_outlined),
+                  TextFormField(
+                    controller: _quantityController,
+                    enabled: !_isLoading,
+                    keyboardType: TextInputType.number,
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(
+                      labelText: 'Quantity',
+                      hintText: 'Number of portions or packets',
+                      prefixIcon: Icon(Icons.inventory_2_outlined),
+                    ),
+                    validator: (value) {
+                      final quantity = int.tryParse(
+                        value?.trim() ?? '',
+                      );
+
+                      return quantity == null || quantity <= 0
+                          ? 'Enter a valid positive whole number'
+                          : null;
+                    },
                   ),
-                  items: _packagingStates.map((state) {
-                    return DropdownMenuItem<String>(
-                      value: state,
-                      child: Text(_packagingLabel(state)),
-                    );
-                  }).toList(),
-                  onChanged: _isLoading
-                      ? null
-                      : (value) {
-                          if (value == null) {
-                            return;
-                          }
+                  const SizedBox(height: 16),
 
-                          setState(() {
-                            _packagingState = value;
-                          });
-                        },
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: _allergensController,
-                  textInputAction: TextInputAction.next,
-                  decoration: const InputDecoration(
-                    labelText: 'Allergens',
-                    hintText: 'Example: milk, peanuts, wheat',
-                    prefixIcon: Icon(
-                      Icons.warning_amber_outlined,
+                  _dropdown(
+                    value: _storageMethod,
+                    label: 'Storage method',
+                    icon: Icons.kitchen_outlined,
+                    options: _storageMethods,
+                    optionLabel: _storageLabel,
+                    onChanged: (value) {
+                      setState(() {
+                        _storageMethod = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16),
+
+                  _dropdown(
+                    value: _packagingState,
+                    label: 'Packaging condition',
+                    icon: Icons.inventory_outlined,
+                    options: _packagingStates,
+                    optionLabel: _packagingLabel,
+                    onChanged: (value) {
+                      setState(() {
+                        _packagingState = value;
+                      });
+                    },
+                  ),
+                  const SizedBox(height: 16),
+
+                  TextFormField(
+                    controller: _allergensController,
+                    enabled: !_isLoading,
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(
+                      labelText: 'Allergens',
+                      hintText: 'Example: milk, peanuts, wheat',
+                      prefixIcon: Icon(Icons.warning_amber_outlined),
                     ),
                   ),
-                ),
-                const SizedBox(height: 16),
-                ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  leading: const Icon(Icons.schedule_outlined),
-                  title: const Text('Preparation time'),
-                  subtitle: Text(_formatDateTime(_preparedAt)),
-                  trailing: TextButton(
-                    onPressed: _isLoading
-                        ? null
-                        : _selectPreparationTime,
-                    child: const Text('Change'),
+                  const SizedBox(height: 16),
+
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    leading: const Icon(Icons.schedule_outlined),
+                    title: const Text('Preparation time'),
+                    subtitle: Text(_formatDateTime(_preparedAt)),
+                    trailing: TextButton(
+                      onPressed:
+                          _isLoading ? null : _selectPreparationTime,
+                      child: const Text('Change'),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: double.infinity,
-                  child: ElevatedButton(
-                    onPressed: _isLoading
-                        ? null
-                        : _submitDonation,
-                    child: _isLoading
-                        ? const SizedBox(
-                            width: 23,
-                            height: 23,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              valueColor:
-                                  AlwaysStoppedAnimation<Color>(
-                                Colors.white,
+
+                  const SizedBox(height: 24),
+                  const Divider(),
+                  const SizedBox(height: 16),
+
+                  Text(
+                    'Pickup location',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  const Text(
+                    'Enter the location where the volunteer '
+                    'should collect this donation. Coordinates '
+                    'must refer to that pickup point.',
+                  ),
+                  const SizedBox(height: 16),
+
+                  TextFormField(
+                    controller: _addressController,
+                    enabled: !_isLoading,
+                    minLines: 2,
+                    maxLines: 3,
+                    maxLength: 300,
+                    decoration: const InputDecoration(
+                      labelText: 'Pickup address / landmark',
+                      prefixIcon: Icon(Icons.place_outlined),
+                    ),
+                    validator: (value) {
+                      final address = value?.trim() ?? '';
+
+                      if (address.isEmpty || address.length > 300) {
+                        return 'Enter an address of 1–300 characters';
+                      }
+
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+
+                  TextFormField(
+                    controller: _cityController,
+                    enabled: !_isLoading,
+                    maxLength: 80,
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(
+                      labelText: 'City',
+                      hintText: 'Use consistent spelling',
+                      prefixIcon: Icon(Icons.location_city_outlined),
+                    ),
+                    validator: (value) {
+                      final city = value?.trim() ?? '';
+
+                      if (city.isEmpty || city.length > 80) {
+                        return 'Enter a city of 1–80 characters';
+                      }
+
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+
+                  TextFormField(
+                    controller: _latitudeController,
+                    enabled: !_isLoading,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                      signed: true,
+                    ),
+                    textInputAction: TextInputAction.next,
+                    decoration: const InputDecoration(
+                      labelText: 'Pickup latitude',
+                      helperText: 'Decimal degrees, from -90 to 90',
+                    ),
+                    validator: (value) => _validateCoordinate(
+                      value,
+                      latitude: true,
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  TextFormField(
+                    controller: _longitudeController,
+                    enabled: !_isLoading,
+                    keyboardType: const TextInputType.numberWithOptions(
+                      decimal: true,
+                      signed: true,
+                    ),
+                    textInputAction: TextInputAction.done,
+                    decoration: const InputDecoration(
+                      labelText: 'Pickup longitude',
+                      helperText: 'Decimal degrees, from -180 to 180',
+                    ),
+                    validator: (value) => _validateCoordinate(
+                      value,
+                      latitude: false,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+
+                  const Text(
+                    'For now, enter coordinates manually. '
+                    'Address-to-coordinate lookup and map selection '
+                    'are not implemented in this form.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                  const SizedBox(height: 24),
+
+                  SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton(
+                      onPressed:
+                          _isLoading ? null : _submitDonation,
+                      child: _isLoading
+                          ? const SizedBox(
+                              width: 23,
+                              height: 23,
+                              child: CircularProgressIndicator(
+                                strokeWidth: 2.5,
                               ),
-                            ),
-                          )
-                        : const Text(
-                            'Create Donation Passport',
-                          ),
+                            )
+                          : const Text('Create Donation Passport'),
+                    ),
                   ),
-                ),
-              ],
+                  const SizedBox(height: 16),
+
+                  const Text(
+                    'FoodBridge records declarations and workflow '
+                    'checks. It does not certify food safety.',
+                    style: TextStyle(fontSize: 12),
+                  ),
+                ],
+              ),
             ),
           ),
         ),
