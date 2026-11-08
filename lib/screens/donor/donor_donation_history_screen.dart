@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/donation_receipt_service.dart';
+
 class DonorDonationHistoryScreen extends StatefulWidget {
   const DonorDonationHistoryScreen({super.key});
 
@@ -24,8 +26,16 @@ class _DonorDonationHistoryScreenState
     keepScrollOffset: false,
   );
 
+  final DonationReceiptService _receiptService =
+      DonationReceiptService();
+
   String? _uid;
   String _filter = 'all';
+
+  String? _generatingReceiptDonationId;
+
+  bool get _isGeneratingReceipt =>
+      _generatingReceiptDonationId != null;
 
   @override
   void initState() {
@@ -94,6 +104,105 @@ class _DonorDonationHistoryScreenState
     if (_scrollController.hasClients) {
       _scrollController.jumpTo(0);
     }
+  }
+
+  Future<void> _shareReceipt(String donationId) async {
+    if (_isGeneratingReceipt) {
+      return;
+    }
+
+    final String? uid = FirebaseAuth.instance.currentUser?.uid;
+
+    if (uid == null || uid != _uid) {
+      _showError(
+        'Your account changed or your session ended. '
+        'Please reopen donation history.',
+      );
+      return;
+    }
+
+    setState(() {
+      _generatingReceiptDonationId = donationId;
+    });
+
+    try {
+      await _receiptService.shareAcceptedDonationReceipt(
+        donationId: donationId,
+      );
+
+      // Do not show a "saved successfully" message here.
+      // Opening the share sheet does not confirm that the
+      // user saved or sent the document.
+    } catch (exception, stackTrace) {
+      debugPrint('Receipt generation failed: $exception');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (!mounted ||
+          FirebaseAuth.instance.currentUser?.uid != uid ||
+          _uid != uid) {
+        return;
+      }
+
+      final String message;
+
+      if (exception is StateError) {
+        message = exception.message.toString();
+      } else if (exception is FirebaseException) {
+        switch (exception.code) {
+          case 'permission-denied':
+            message =
+                'Unable to read this donation. '
+                'Check that it belongs to your signed-in donor account.';
+            break;
+
+          case 'unauthenticated':
+            message =
+                'Your session has ended. Please log in again.';
+            break;
+
+          case 'unavailable':
+          case 'deadline-exceeded':
+            message =
+                'Unable to fetch the latest completion record. '
+                'Check your connection and try again.';
+            break;
+
+          default:
+            message =
+                'Unable to read the completion record. '
+                '(${exception.code})';
+        }
+      } else {
+        message =
+            'Unable to generate or share the receipt. '
+            'Please try again.';
+      }
+
+      _showError(message);
+    } finally {
+      if (mounted) {
+        setState(() {
+          _generatingReceiptDonationId = null;
+        });
+      }
+    }
+  }
+
+  void _showError(String message) {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          backgroundColor: Colors.red.shade700,
+          behavior: SnackBarBehavior.floating,
+          duration: const Duration(seconds: 6),
+        ),
+      );
   }
 
   String _text(dynamic value, String fallback) {
@@ -251,6 +360,61 @@ class _DonorDonationHistoryScreenState
     );
   }
 
+  Widget _receiptSection(String donationId) {
+    final bool isGeneratingThisReceipt =
+        _generatingReceiptDonationId == donationId;
+
+    return Padding(
+      padding: const EdgeInsets.only(
+        top: 8,
+        bottom: 16,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          const Divider(),
+          const SizedBox(height: 12),
+          Text(
+            'Donation completion receipt',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'Generate a PDF summary of the accepted donation '
+            'and its recorded workflow. The receipt is generated '
+            'on your device and is not uploaded to Firebase Storage.',
+          ),
+          const SizedBox(height: 12),
+          OutlinedButton.icon(
+            onPressed: _isGeneratingReceipt
+                ? null
+                : () => _shareReceipt(donationId),
+            icon: isGeneratingThisReceipt
+                ? const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                    ),
+                  )
+                : const Icon(Icons.picture_as_pdf_outlined),
+            label: Text(
+              isGeneratingThisReceipt
+                  ? 'Preparing receipt...'
+                  : 'Share completion receipt',
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            'This is a workflow receipt, not a food-safety '
+            'certificate, carbon-impact certificate, or tax receipt.',
+            style: TextStyle(fontSize: 12),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _donationDetails(
     QueryDocumentSnapshot<Map<String, dynamic>> document,
   ) {
@@ -360,6 +524,8 @@ class _DonorDonationHistoryScreenState
                 'its final decision.',
               ),
             ),
+          if (status == 'accepted')
+            _receiptSection(document.id),
           const Text(
             'This timeline displays saved workflow records. '
             'It does not certify food safety.',
@@ -385,7 +551,7 @@ class _DonorDonationHistoryScreenState
             : 'Quantity not recorded';
 
     return Card(
-      key: ValueKey('donation-${document.id}'),
+      key: ValueKey('donation-$_uid-${document.id}'),
       margin: const EdgeInsets.only(bottom: 12),
       clipBehavior: Clip.antiAlias,
       child: Column(
