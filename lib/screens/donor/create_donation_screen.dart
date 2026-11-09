@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../../models/donation_model.dart';
 import '../../services/eligibility_service.dart';
 import '../../services/firestore_service.dart';
+import '../location/location_picker_screen.dart';
 import 'donation_passport_screen.dart';
 
 class CreateDonationScreen extends StatefulWidget {
@@ -31,12 +32,6 @@ class _CreateDonationScreenState
       TextEditingController();
 
   final TextEditingController _cityController =
-      TextEditingController();
-
-  final TextEditingController _latitudeController =
-      TextEditingController();
-
-  final TextEditingController _longitudeController =
       TextEditingController();
 
   static const List<String> _foodCategories = [
@@ -68,7 +63,13 @@ class _CreateDonationScreenState
     const Duration(minutes: 30),
   );
 
+  GeoPoint? _pickupLocation;
+  String? _locationError;
+
   bool _isLoading = false;
+  bool _isPickingLocation = false;
+
+  bool get _isBusy => _isLoading || _isPickingLocation;
 
   @override
   void dispose() {
@@ -76,31 +77,75 @@ class _CreateDonationScreenState
     _allergensController.dispose();
     _addressController.dispose();
     _cityController.dispose();
-    _latitudeController.dispose();
-    _longitudeController.dispose();
     super.dispose();
   }
 
-  Future<void> _selectPreparationTime() async {
-    if (_isLoading) {
+  Future<void> _pickLocation({
+    required bool useCurrentLocation,
+  }) async {
+    if (_isBusy) {
       return;
     }
 
-    final DateTime now = DateTime.now();
+    setState(() {
+      _isPickingLocation = true;
+    });
 
-    final DateTime earliestDate =
-        now.subtract(const Duration(days: 30));
+    try {
+      final point = await Navigator.of(context).push<GeoPoint>(
+        MaterialPageRoute<GeoPoint>(
+          builder: (_) => LocationPickerScreen(
+            initialLocation: _pickupLocation,
+            locateOnOpen: useCurrentLocation,
+          ),
+        ),
+      );
 
-    final DateTime initialDate = _preparedAt.isBefore(earliestDate)
-        ? earliestDate
+      if (!mounted || point == null) {
+        return;
+      }
+
+      setState(() {
+        _pickupLocation = point;
+        _locationError = null;
+      });
+    } catch (exception, stackTrace) {
+      debugPrint('Opening location picker failed: $exception');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (mounted) {
+        _showMessage(
+          'Unable to open the location picker. Please try again.',
+          Colors.red.shade700,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isPickingLocation = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _selectPreparationTime() async {
+    if (_isBusy) {
+      return;
+    }
+
+    final now = DateTime.now();
+    final earliest = now.subtract(const Duration(days: 30));
+
+    final initial = _preparedAt.isBefore(earliest)
+        ? earliest
         : _preparedAt.isAfter(now)
             ? now
             : _preparedAt;
 
-    final DateTime? selectedDate = await showDatePicker(
+    final selectedDate = await showDatePicker(
       context: context,
-      initialDate: initialDate,
-      firstDate: earliestDate,
+      initialDate: initial,
+      firstDate: earliest,
       lastDate: now,
     );
 
@@ -108,7 +153,7 @@ class _CreateDonationScreenState
       return;
     }
 
-    final TimeOfDay? selectedTime = await showTimePicker(
+    final selectedTime = await showTimePicker(
       context: context,
       initialTime: TimeOfDay.fromDateTime(_preparedAt),
     );
@@ -117,7 +162,7 @@ class _CreateDonationScreenState
       return;
     }
 
-    final DateTime selectedDateTime = DateTime(
+    final selected = DateTime(
       selectedDate.year,
       selectedDate.month,
       selectedDate.day,
@@ -125,7 +170,7 @@ class _CreateDonationScreenState
       selectedTime.minute,
     );
 
-    if (selectedDateTime.isAfter(DateTime.now())) {
+    if (selected.isAfter(DateTime.now())) {
       _showMessage(
         'Preparation time cannot be in the future.',
         Colors.orange.shade800,
@@ -134,42 +179,30 @@ class _CreateDonationScreenState
     }
 
     setState(() {
-      _preparedAt = selectedDateTime;
+      _preparedAt = selected;
     });
   }
 
-  String? _validateCoordinate(
-    String? value, {
-    required bool latitude,
-  }) {
-    final double? coordinate = double.tryParse(
-      value?.trim() ?? '',
-    );
-
-    final double minimum = latitude ? -90 : -180;
-    final double maximum = latitude ? 90 : 180;
-
-    if (coordinate == null ||
-        !coordinate.isFinite ||
-        coordinate < minimum ||
-        coordinate > maximum) {
-      return latitude
-          ? 'Enter latitude from -90 to 90'
-          : 'Enter longitude from -180 to 180';
+  Future<void> _submitDonation() async {
+    if (_isBusy) {
+      return;
     }
 
-    return null;
-  }
+    final validForm = _formKey.currentState?.validate() ?? false;
+    final point = _pickupLocation;
 
-  Future<void> _submitDonation() async {
-    if (_isLoading ||
-        !(_formKey.currentState?.validate() ?? false)) {
+    setState(() {
+      _locationError =
+          point == null ? 'Please select a pickup location.' : null;
+    });
+
+    if (!validForm || point == null) {
       return;
     }
 
     FocusScope.of(context).unfocus();
 
-    final String? uid = FirebaseAuth.instance.currentUser?.uid;
+    final uid = FirebaseAuth.instance.currentUser?.uid;
 
     if (uid == null) {
       _showMessage(
@@ -179,36 +212,15 @@ class _CreateDonationScreenState
       return;
     }
 
-    final int? quantity = int.tryParse(
+    final quantity = int.tryParse(
       _quantityController.text.trim(),
     );
 
-    final double? latitude = double.tryParse(
-      _latitudeController.text.trim(),
-    );
-
-    final double? longitude = double.tryParse(
-      _longitudeController.text.trim(),
-    );
-
-    if (quantity == null ||
-        quantity <= 0 ||
-        latitude == null ||
-        longitude == null ||
-        !latitude.isFinite ||
-        !longitude.isFinite ||
-        latitude < -90 ||
-        latitude > 90 ||
-        longitude < -180 ||
-        longitude > 180) {
-      _showMessage(
-        'Check the quantity and pickup coordinates.',
-        Colors.orange.shade800,
-      );
+    if (quantity == null || quantity <= 0) {
       return;
     }
 
-    final DateTime now = DateTime.now();
+    final now = DateTime.now();
 
     if (_preparedAt.isAfter(now)) {
       _showMessage(
@@ -232,7 +244,7 @@ class _CreateDonationScreenState
         packagingState: _packagingState,
       );
 
-      final DonationModel draftDonation = DonationModel(
+      final draft = DonationModel(
         id: '',
         donorId: uid,
         foodCategory: _foodCategory,
@@ -252,7 +264,7 @@ class _CreateDonationScreenState
             .trim()
             .replaceAll(RegExp(r'\s+'), ' ')
             .toLowerCase(),
-        pickupLocation: GeoPoint(latitude, longitude),
+        pickupLocation: point,
       );
 
       if (FirebaseAuth.instance.currentUser?.uid != uid) {
@@ -261,21 +273,18 @@ class _CreateDonationScreenState
         );
       }
 
-      final String donationId =
-          await _firestoreService.createDonation(draftDonation);
+      final donationId =
+          await _firestoreService.createDonation(draft);
 
       if (!mounted ||
           FirebaseAuth.instance.currentUser?.uid != uid) {
         return;
       }
 
-      final DonationModel savedDonation =
-          draftDonation.withId(donationId);
-
       Navigator.of(context).pushReplacement<void, void>(
         MaterialPageRoute<void>(
           builder: (_) => DonationPassportScreen(
-            donation: savedDonation,
+            donation: draft.withId(donationId),
             explanation: eligibility.explanation,
           ),
         ),
@@ -295,36 +304,32 @@ class _CreateDonationScreenState
       _showMessage(
         exception.code == 'permission-denied'
             ? 'Firestore denied donation creation. '
-                'Publish the updated donation-creation rules '
-                'that allow and validate pickup location.'
+                'Check that the pickup-location rules are published.'
             : 'Unable to confirm donation creation. '
                 'Check donation history before retrying. '
                 '(${exception.code})',
         Colors.red.shade700,
       );
     } on StateError catch (exception) {
-      if (!mounted) {
-        return;
+      if (mounted &&
+          FirebaseAuth.instance.currentUser?.uid == uid) {
+        _showMessage(
+          exception.message.toString(),
+          Colors.red.shade700,
+        );
       }
-
-      _showMessage(
-        exception.message.toString(),
-        Colors.red.shade700,
-      );
     } catch (exception, stackTrace) {
-      debugPrint('Unexpected donation creation error: $exception');
+      debugPrint('Donation creation failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
-      if (!mounted ||
-          FirebaseAuth.instance.currentUser?.uid != uid) {
-        return;
+      if (mounted &&
+          FirebaseAuth.instance.currentUser?.uid == uid) {
+        _showMessage(
+          'Unable to confirm donation creation. '
+          'Check donation history before retrying.',
+          Colors.red.shade700,
+        );
       }
-
-      _showMessage(
-        'Unable to confirm donation creation. '
-        'Check donation history before retrying.',
-        Colors.red.shade700,
-      );
     } finally {
       if (mounted) {
         setState(() {
@@ -359,10 +364,8 @@ class _CreateDonationScreenState
         return 'Refrigerated';
       case 'frozen':
         return 'Frozen';
-      case 'unknown':
-        return 'Unknown';
       default:
-        return value;
+        return 'Unknown';
     }
   }
 
@@ -382,7 +385,7 @@ class _CreateDonationScreenState
   }
 
   String _formatDateTime(DateTime value) {
-    final DateTime local = value.toLocal();
+    final local = value.toLocal();
 
     String two(int number) => number.toString().padLeft(2, '0');
 
@@ -411,7 +414,7 @@ class _CreateDonationScreenState
           child: Text(optionLabel(option)),
         );
       }).toList(),
-      onChanged: _isLoading
+      onChanged: _isBusy
           ? null
           : (selected) {
               if (selected != null) {
@@ -464,7 +467,7 @@ class _CreateDonationScreenState
 
                   TextFormField(
                     controller: _quantityController,
-                    enabled: !_isLoading,
+                    enabled: !_isBusy,
                     keyboardType: TextInputType.number,
                     textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(
@@ -514,8 +517,7 @@ class _CreateDonationScreenState
 
                   TextFormField(
                     controller: _allergensController,
-                    enabled: !_isLoading,
-                    textInputAction: TextInputAction.next,
+                    enabled: !_isBusy,
                     decoration: const InputDecoration(
                       labelText: 'Allergens',
                       hintText: 'Example: milk, peanuts, wheat',
@@ -531,7 +533,7 @@ class _CreateDonationScreenState
                     subtitle: Text(_formatDateTime(_preparedAt)),
                     trailing: TextButton(
                       onPressed:
-                          _isLoading ? null : _selectPreparationTime,
+                          _isBusy ? null : _selectPreparationTime,
                       child: const Text('Change'),
                     ),
                   ),
@@ -546,15 +548,15 @@ class _CreateDonationScreenState
                   ),
                   const SizedBox(height: 8),
                   const Text(
-                    'Enter the location where the volunteer '
-                    'should collect this donation. Coordinates '
-                    'must refer to that pickup point.',
+                    'Enter the collection address and city, then '
+                    'confirm its point on the map. You do not '
+                    'need to know your coordinates.',
                   ),
                   const SizedBox(height: 16),
 
                   TextFormField(
                     controller: _addressController,
-                    enabled: !_isLoading,
+                    enabled: !_isBusy,
                     minLines: 2,
                     maxLines: 3,
                     maxLength: 300,
@@ -565,20 +567,17 @@ class _CreateDonationScreenState
                     validator: (value) {
                       final address = value?.trim() ?? '';
 
-                      if (address.isEmpty || address.length > 300) {
-                        return 'Enter an address of 1–300 characters';
-                      }
-
-                      return null;
+                      return address.isEmpty || address.length > 300
+                          ? 'Enter an address of 1–300 characters'
+                          : null;
                     },
                   ),
                   const SizedBox(height: 16),
 
                   TextFormField(
                     controller: _cityController,
-                    enabled: !_isLoading,
+                    enabled: !_isBusy,
                     maxLength: 80,
-                    textInputAction: TextInputAction.next,
                     decoration: const InputDecoration(
                       labelText: 'City',
                       hintText: 'Use consistent spelling',
@@ -587,66 +586,70 @@ class _CreateDonationScreenState
                     validator: (value) {
                       final city = value?.trim() ?? '';
 
-                      if (city.isEmpty || city.length > 80) {
-                        return 'Enter a city of 1–80 characters';
-                      }
-
-                      return null;
+                      return city.isEmpty || city.length > 80
+                          ? 'Enter a city of 1–80 characters'
+                          : null;
                     },
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 12),
 
-                  TextFormField(
-                    controller: _latitudeController,
-                    enabled: !_isLoading,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                      signed: true,
-                    ),
-                    textInputAction: TextInputAction.next,
-                    decoration: const InputDecoration(
-                      labelText: 'Pickup latitude',
-                      helperText: 'Decimal degrees, from -90 to 90',
-                    ),
-                    validator: (value) => _validateCoordinate(
-                      value,
-                      latitude: true,
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _isBusy
+                          ? null
+                          : () => _pickLocation(
+                                useCurrentLocation: true,
+                              ),
+                      icon: const Icon(Icons.my_location),
+                      label: const Text('Use my current location'),
                     ),
                   ),
-                  const SizedBox(height: 16),
+                  const SizedBox(height: 8),
 
-                  TextFormField(
-                    controller: _longitudeController,
-                    enabled: !_isLoading,
-                    keyboardType: const TextInputType.numberWithOptions(
-                      decimal: true,
-                      signed: true,
-                    ),
-                    textInputAction: TextInputAction.done,
-                    decoration: const InputDecoration(
-                      labelText: 'Pickup longitude',
-                      helperText: 'Decimal degrees, from -180 to 180',
-                    ),
-                    validator: (value) => _validateCoordinate(
-                      value,
-                      latitude: false,
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _isBusy
+                          ? null
+                          : () => _pickLocation(
+                                useCurrentLocation: false,
+                              ),
+                      icon: const Icon(Icons.map_outlined),
+                      label: Text(
+                        _pickupLocation == null
+                            ? 'Choose pickup point on map'
+                            : 'View or change pickup point',
+                      ),
                     ),
                   ),
                   const SizedBox(height: 12),
 
-                  const Text(
-                    'For now, enter coordinates manually. '
-                    'Address-to-coordinate lookup and map selection '
-                    'are not implemented in this form.',
-                    style: TextStyle(fontSize: 12),
-                  ),
+                  if (_pickupLocation != null)
+                    const Text(
+                      'Pickup point selected and confirmed. '
+                      'Make sure the address and city describe '
+                      'the same collection point.',
+                      style: TextStyle(
+                        color: Color(0xFF356B4D),
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+
+                  if (_locationError != null)
+                    Text(
+                      _locationError!,
+                      style: TextStyle(
+                        color: Colors.red.shade700,
+                      ),
+                    ),
+
                   const SizedBox(height: 24),
 
                   SizedBox(
                     width: double.infinity,
                     child: ElevatedButton(
-                      onPressed:
-                          _isLoading ? null : _submitDonation,
+                      onPressed: _isBusy ? null : _submitDonation,
                       child: _isLoading
                           ? const SizedBox(
                               width: 23,
