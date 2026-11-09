@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'donation_details_screen.dart';
 import 'ngo_claimed_donations_screen.dart';
 import 'ngo_delivery_inbox_screen.dart';
+import 'ngo_nearby_donations_screen.dart';
 import 'ngo_receiving_settings_screen.dart';
 
 class NgoDashboardScreen extends StatefulWidget {
@@ -328,6 +329,10 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     await _openScreen(const NgoReceivingSettingsScreen());
   }
 
+  Future<void> _openNearbyDonations() async {
+    await _openScreen(const NgoNearbyDonationsScreen());
+  }
+
   Future<void> _openClaimedDonations() async {
     await _openScreen(const NgoClaimedDonationsScreen());
   }
@@ -612,6 +617,16 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           onPressed: _openReceivingSettings,
         ),
         _buildNavigationCard(
+          icon: Icons.near_me_outlined,
+          title: 'Nearby donations',
+          description:
+              'Find eligible donations within 10 km of your '
+              'saved NGO receiving point. Nearby results use '
+              'geographical distance, not road travel time.',
+          buttonLabel: 'Find nearby donations',
+          onPressed: _openNearbyDonations,
+        ),
+        _buildNavigationCard(
           icon: Icons.inventory_outlined,
           title: 'My claimed donations',
           description:
@@ -693,9 +708,15 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
                 case 'receiving':
                   await _openReceivingSettings();
                   break;
+
+                case 'nearby':
+                  await _openNearbyDonations();
+                  break;
+
                 case 'claimed':
                   await _openClaimedDonations();
                   break;
+
                 case 'deliveries':
                   await _openDeliveryInbox();
                   break;
@@ -705,6 +726,10 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
               PopupMenuItem<String>(
                 value: 'receiving',
                 child: Text('Receiving settings'),
+              ),
+              PopupMenuItem<String>(
+                value: 'nearby',
+                child: Text('Nearby donations'),
               ),
               PopupMenuItem<String>(
                 value: 'claimed',
@@ -849,8 +874,10 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
                   ),
                   const SizedBox(height: 6),
                   const Text(
+                    'These are all available listings. '
                     'Eligible listings are shown first, '
-                    'ordered by pickup deadline.',
+                    'ordered by pickup deadline. '
+                    'Use Nearby donations for the 10 km view.',
                   ),
                 ],
               ),
@@ -1128,7 +1155,8 @@ class _EmptyDonationsView extends StatelessWidget {
             Text(
               'New listings will appear when donors publish donations. '
               'Use the cards above to manage receiving settings, '
-              'open claimed donations, or review delivered donations.',
+              'find nearby donations, open claimed donations, '
+              'or review delivered donations.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.grey.shade700,
