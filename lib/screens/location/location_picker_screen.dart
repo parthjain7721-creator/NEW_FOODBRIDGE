@@ -72,7 +72,8 @@ class _LocationPickerScreenState
     });
 
     try {
-      final enabled = await Geolocator.isLocationServiceEnabled();
+      final enabled =
+          await Geolocator.isLocationServiceEnabled();
 
       if (!mounted) {
         return;
@@ -81,7 +82,7 @@ class _LocationPickerScreenState
       if (!enabled) {
         throw StateError(
           'Device location is switched off. Enable it in settings, '
-          'or select the pickup point manually on the map.',
+          'or select the required location manually on the map.',
         );
       }
 
@@ -102,7 +103,7 @@ class _LocationPickerScreenState
       if (permission == LocationPermission.deniedForever) {
         throw StateError(
           'Location permission is blocked. Allow it in app settings, '
-          'or select the pickup point manually on the map.',
+          'or select the required location manually on the map.',
         );
       }
 
@@ -110,7 +111,7 @@ class _LocationPickerScreenState
           permission != LocationPermission.always) {
         throw StateError(
           'Location permission was not granted. '
-          'You can still select a point on the map.',
+          'You can still select a location on the map.',
         );
       }
 
@@ -132,7 +133,10 @@ class _LocationPickerScreenState
 
       setState(() {
         _selectedPoint = point;
-        _accuracyMeters = position.accuracy;
+        _accuracyMeters =
+            position.accuracy.isFinite && position.accuracy >= 0
+                ? position.accuracy
+                : null;
         _confirmedPoint = false;
         _locationError = null;
       });
@@ -143,7 +147,7 @@ class _LocationPickerScreenState
         setState(() {
           _locationError =
               'Getting your location took too long. '
-              'Try again or select the pickup point on the map.';
+              'Try again or select the required location on the map.';
         });
       }
     } on StateError catch (exception) {
@@ -160,7 +164,7 @@ class _LocationPickerScreenState
         setState(() {
           _locationError =
               'Unable to obtain your location. '
-              'Try again or select a point on the map.';
+              'Try again or select a location on the map.';
         });
       }
     } finally {
@@ -184,24 +188,44 @@ class _LocationPickerScreenState
         return;
       }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Unable to open device settings.'),
-        ),
-      );
+      _showMessage('Unable to open device settings.');
     } catch (exception) {
-      debugPrint('Opening location settings failed: $exception');
+      debugPrint(
+        'Opening location settings failed: $exception',
+      );
 
-      if (!mounted) {
-        return;
+      if (mounted) {
+        _showMessage('Please open device settings manually.');
       }
+    }
+  }
 
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Please open settings manually.'),
+  void _showMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
         ),
       );
+  }
+
+  void _selectPoint(LatLng point) {
+    if (_isLocating) {
+      return;
     }
+
+    setState(() {
+      _selectedPoint = point;
+      _accuracyMeters = null;
+      _confirmedPoint = false;
+      _locationError = null;
+    });
   }
 
   void _confirmSelection() {
@@ -212,19 +236,22 @@ class _LocationPickerScreenState
     }
 
     Navigator.of(context).pop<GeoPoint>(
-      GeoPoint(point.latitude, point.longitude),
+      GeoPoint(
+        point.latitude,
+        point.longitude,
+      ),
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    // A broad initial view is not a selected pickup location.
+    // The default overview does not count as a selected location.
     final initialCenter =
         _selectedPoint ?? const LatLng(20.5937, 78.9629);
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Choose pickup location'),
+        title: const Text('Choose location'),
       ),
       body: SafeArea(
         child: Column(
@@ -235,9 +262,9 @@ class _LocationPickerScreenState
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   const Text(
-                    'Move and zoom the map, then tap the actual '
-                    'collection point. A device location is only '
-                    'a starting suggestion.',
+                    'Move and zoom the map, then tap the required '
+                    'location. A device location is only a '
+                    'starting suggestion.',
                   ),
                   const SizedBox(height: 10),
                   OutlinedButton.icon(
@@ -270,15 +297,19 @@ class _LocationPickerScreenState
                       spacing: 8,
                       children: [
                         TextButton(
-                          onPressed: () => _openSettings(
-                            appSettings: false,
-                          ),
+                          onPressed: _isLocating
+                              ? null
+                              : () => _openSettings(
+                                    appSettings: false,
+                                  ),
                           child: const Text('Location settings'),
                         ),
                         TextButton(
-                          onPressed: () => _openSettings(
-                            appSettings: true,
-                          ),
+                          onPressed: _isLocating
+                              ? null
+                              : () => _openSettings(
+                                    appSettings: true,
+                                  ),
                           child: const Text('App permissions'),
                         ),
                       ],
@@ -299,17 +330,7 @@ class _LocationPickerScreenState
                           _selectedPoint == null ? 4.5 : 16,
                       minZoom: 2,
                       maxZoom: 19,
-                      onTap: (_, point) {
-                        if (_isLocating) {
-                          return;
-                        }
-
-                        setState(() {
-                          _selectedPoint = point;
-                          _accuracyMeters = null;
-                          _confirmedPoint = false;
-                        });
-                      },
+                      onTap: (_, point) => _selectPoint(point),
                     ),
                     children: [
                       TileLayer(
@@ -327,6 +348,7 @@ class _LocationPickerScreenState
                               point: _selectedPoint!,
                               width: 48,
                               height: 48,
+                              alignment: Alignment.topCenter,
                               child: const Icon(
                                 Icons.location_on,
                                 size: 46,
@@ -370,8 +392,8 @@ class _LocationPickerScreenState
                 children: [
                   Text(
                     _selectedPoint == null
-                        ? 'No pickup point selected yet.'
-                        : 'Pickup marker selected. '
+                        ? 'No location selected yet.'
+                        : 'Location marker selected. '
                             'Check its position before confirming.',
                   ),
                   if (_accuracyMeters != null) ...[
@@ -379,7 +401,7 @@ class _LocationPickerScreenState
                     Text(
                       'Device-reported accuracy: approximately '
                       '${_accuracyMeters!.round()} metres. '
-                      'Tap the map to correct the point if needed.',
+                      'Tap the map to correct the location if needed.',
                       style: const TextStyle(fontSize: 12),
                     ),
                   ],
@@ -388,7 +410,7 @@ class _LocationPickerScreenState
                     controlAffinity:
                         ListTileControlAffinity.leading,
                     title: const Text(
-                      'This marker is the donation collection point.',
+                      'This marker is the correct location.',
                     ),
                     value: _confirmedPoint,
                     onChanged:
@@ -407,7 +429,7 @@ class _LocationPickerScreenState
                         ? _confirmSelection
                         : null,
                     icon: const Icon(Icons.check),
-                    label: const Text('Confirm pickup point'),
+                    label: const Text('Confirm location'),
                   ),
                 ],
               ),
