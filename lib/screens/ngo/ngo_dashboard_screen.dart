@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'donation_details_screen.dart';
 import 'ngo_claimed_donations_screen.dart';
 import 'ngo_delivery_inbox_screen.dart';
+import 'ngo_receiving_settings_screen.dart';
 
 class NgoDashboardScreen extends StatefulWidget {
   const NgoDashboardScreen({super.key});
@@ -323,6 +324,10 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
     }
   }
 
+  Future<void> _openReceivingSettings() async {
+    await _openScreen(const NgoReceivingSettingsScreen());
+  }
+
   Future<void> _openClaimedDonations() async {
     await _openScreen(const NgoClaimedDonationsScreen());
   }
@@ -597,6 +602,16 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _buildNavigationCard(
+          icon: Icons.location_on_outlined,
+          title: 'Receiving location and requirements',
+          description:
+              'Set your NGO receiving address, select its point '
+              'on the map, and record your required quantity '
+              'and preferred food categories.',
+          buttonLabel: 'Manage receiving settings',
+          onPressed: _openReceivingSettings,
+        ),
+        _buildNavigationCard(
           icon: Icons.inventory_outlined,
           title: 'My claimed donations',
           description:
@@ -670,15 +685,37 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
       appBar: AppBar(
         title: const Text('NGO Dashboard'),
         actions: [
-          IconButton(
-            tooltip: 'Delivery inbox',
-            onPressed: _isBusy ? null : _openDeliveryInbox,
-            icon: const Icon(Icons.fact_check_outlined),
-          ),
-          IconButton(
-            tooltip: 'My claimed donations',
-            onPressed: _isBusy ? null : _openClaimedDonations,
-            icon: const Icon(Icons.inventory_outlined),
+          PopupMenuButton<String>(
+            tooltip: 'NGO actions',
+            enabled: !_isBusy,
+            onSelected: (value) async {
+              switch (value) {
+                case 'receiving':
+                  await _openReceivingSettings();
+                  break;
+                case 'claimed':
+                  await _openClaimedDonations();
+                  break;
+                case 'deliveries':
+                  await _openDeliveryInbox();
+                  break;
+              }
+            },
+            itemBuilder: (_) => const [
+              PopupMenuItem<String>(
+                value: 'receiving',
+                child: Text('Receiving settings'),
+              ),
+              PopupMenuItem<String>(
+                value: 'claimed',
+                child: Text('My claimed donations'),
+              ),
+              PopupMenuItem<String>(
+                value: 'deliveries',
+                child: Text('Delivery inbox'),
+              ),
+            ],
+            icon: const Icon(Icons.more_vert),
           ),
           IconButton(
             tooltip: 'Logout',
@@ -1090,8 +1127,8 @@ class _EmptyDonationsView extends StatelessWidget {
             const SizedBox(height: 8),
             Text(
               'New listings will appear when donors publish donations. '
-              'Use the cards above to open your claimed donations '
-              'or review delivered donations.',
+              'Use the cards above to manage receiving settings, '
+              'open claimed donations, or review delivered donations.',
               textAlign: TextAlign.center,
               style: TextStyle(
                 color: Colors.grey.shade700,
