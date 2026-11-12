@@ -318,7 +318,8 @@ class _VolunteerTaskDetailsScreenState
     }
 
     final Object? pickup = data['pickupLocation'];
-    final Object? receivingNgoId = data['claimedByNgoId'];
+    final Object? receivingLocation = data['receivingLocation'];
+    final Object? rawReceivingAddress = data['receivingAddress'];
 
     if (pickup is! GeoPoint) {
       _showSnackBar(
@@ -328,55 +329,24 @@ class _VolunteerTaskDetailsScreenState
       return;
     }
 
-    if (receivingNgoId is! String || receivingNgoId.trim().isEmpty) {
+    if (receivingLocation is! GeoPoint) {
       _showSnackBar(
-        'The receiving NGO is not available for this task.',
+        'The receiving NGO location is not available for this task.',
         isError: true,
       );
       return;
     }
+
+    final String receivingAddress =
+        rawReceivingAddress is String && rawReceivingAddress.trim().isNotEmpty
+            ? rawReceivingAddress.trim()
+            : 'Receiving address not recorded';
 
     setState(() {
       _isRouteFeasibilityOpen = true;
     });
 
     try {
-      final receivingSnapshot = await FirebaseFirestore.instance
-          .collection('users')
-          .doc(receivingNgoId)
-          .get(const GetOptions(source: Source.server));
-
-      if (!_sameSession(volunteerId, donationId)) {
-        return;
-      }
-
-      final receivingData = receivingSnapshot.data();
-
-      if (!receivingSnapshot.exists || receivingData == null) {
-        throw StateError(
-          'The receiving NGO profile is no longer available.',
-        );
-      }
-
-      final Object? rawSettings = receivingData['ngoReceivingProfile'];
-
-      final Map<String, dynamic>? settings =
-          rawSettings is Map<String, dynamic> ? rawSettings : null;
-
-      final Object? receivingLocation = settings?['location'];
-      final Object? rawAddress = settings?['address'];
-
-      final String receivingAddress =
-          rawAddress is String && rawAddress.trim().isNotEmpty
-              ? rawAddress.trim()
-              : 'Receiving address not recorded';
-
-      if (receivingLocation is! GeoPoint) {
-        throw StateError(
-          'The receiving NGO has not saved a receiving location.',
-        );
-      }
-
       if (!mounted) {
         return;
       }
@@ -400,19 +370,6 @@ class _VolunteerTaskDetailsScreenState
           ),
         ),
       );
-    } on FirebaseException catch (exception, stackTrace) {
-      debugPrint(
-        'Route feasibility Firestore error: '
-        '${exception.code} — ${exception.message}',
-      );
-      debugPrintStack(stackTrace: stackTrace);
-
-      if (_sameSession(volunteerId, donationId)) {
-        _showSnackBar(
-          _routeFeasibilityFirestoreError(exception),
-          isError: true,
-        );
-      }
     } catch (exception, stackTrace) {
       debugPrint('Route feasibility setup failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
@@ -420,9 +377,8 @@ class _VolunteerTaskDetailsScreenState
       if (_sameSession(volunteerId, donationId)) {
         _showSnackBar(
           exception is StateError
-              ? exception.message
-              : 'Unable to open route feasibility. '
-                  '(${exception.runtimeType})',
+              ? exception.message.toString()
+              : 'Unable to open route feasibility. Please try again.',
           isError: true,
         );
       }
@@ -432,24 +388,6 @@ class _VolunteerTaskDetailsScreenState
           _isRouteFeasibilityOpen = false;
         });
       }
-    }
-  }
-
-  String _routeFeasibilityFirestoreError(FirebaseException exception) {
-    switch (exception.code) {
-      case 'permission-denied':
-        return 'FoodBridge cannot read the receiving NGO’s location for '
-            'this assigned task. The Firestore security rules currently '
-            'prevent the volunteer from accessing it.';
-      case 'unauthenticated':
-        return 'Your session has ended. Please log in again.';
-      case 'unavailable':
-      case 'deadline-exceeded':
-        return 'Unable to load the receiving NGO location. '
-            'Check your connection and try again.';
-      default:
-        return 'Unable to load the receiving NGO location. '
-            '(${exception.code})';
     }
   }
 

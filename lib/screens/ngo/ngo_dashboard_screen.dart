@@ -18,7 +18,8 @@ class NgoDashboardScreen extends StatefulWidget {
       _NgoDashboardScreenState();
 }
 
-class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
+class _NgoDashboardScreenState
+    extends State<NgoDashboardScreen> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
@@ -116,7 +117,6 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           _firestore.collection('users').doc(uid);
 
       await _firestore.runTransaction<void>((transaction) async {
-        // Complete all reads before writing.
         final profileSnapshot = await transaction.get(profileRef);
         final donationSnapshot = await transaction.get(donationRef);
 
@@ -135,6 +135,25 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
             'An active NGO profile is required to claim donations.',
           );
         }
+
+        final Object? rawSettings = profile['ngoReceivingProfile'];
+        final Map<String, dynamic>? settings =
+            rawSettings is Map<String, dynamic> ? rawSettings : null;
+
+        final Object? receivingLocation = settings?['location'];
+        final Object? rawReceivingAddress = settings?['address'];
+
+        if (receivingLocation is! GeoPoint) {
+          throw StateError(
+            'Set your NGO receiving location before claiming donations.',
+          );
+        }
+
+        final String receivingAddress =
+            rawReceivingAddress is String &&
+                    rawReceivingAddress.trim().isNotEmpty
+                ? rawReceivingAddress.trim()
+                : 'Receiving address not recorded';
 
         final Map<String, dynamic>? donation = donationSnapshot.data();
 
@@ -196,6 +215,8 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
           'claimedAt': FieldValue.serverTimestamp(),
           'ngoPickupConfirmed': false,
           'volunteerAssignmentStatus': 'pending',
+          'receivingLocation': receivingLocation,
+          'receivingAddress': receivingAddress,
           'updatedAt': FieldValue.serverTimestamp(),
         });
       });
@@ -269,8 +290,6 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
 
     try {
       await _auth.signOut();
-
-      // AuthGate handles the transition back to Login.
     } catch (exception, stackTrace) {
       debugPrint('NGO logout failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
@@ -776,7 +795,6 @@ class _NgoDashboardScreenState extends State<NgoDashboardScreen> {
                 snapshot.hasData &&
                 donations.isNotEmpty;
 
-            // Navigation + heading + listings/state + footer.
             final int contentCount =
                 showListings ? donations.length : 1;
 

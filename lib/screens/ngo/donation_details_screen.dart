@@ -105,7 +105,6 @@ class _DonationDetailsScreenState
       final profileRef = _firestore.collection('users').doc(user.uid);
 
       await _firestore.runTransaction((transaction) async {
-        // Perform all reads before writes.
         final profileSnapshot = await transaction.get(profileRef);
         final donationSnapshot = await transaction.get(donationRef);
 
@@ -119,6 +118,25 @@ class _DonationDetailsScreenState
             'An active NGO profile is required to claim donations.',
           );
         }
+
+        final Object? rawSettings = profile?['ngoReceivingProfile'];
+        final Map<String, dynamic>? settings =
+            rawSettings is Map<String, dynamic> ? rawSettings : null;
+
+        final Object? receivingLocation = settings?['location'];
+        final Object? rawReceivingAddress = settings?['address'];
+
+        if (receivingLocation is! GeoPoint) {
+          throw StateError(
+            'Set your NGO receiving location before claiming donations.',
+          );
+        }
+
+        final String receivingAddress =
+            rawReceivingAddress is String &&
+                    rawReceivingAddress.trim().isNotEmpty
+                ? rawReceivingAddress.trim()
+                : 'Receiving address not recorded';
 
         final Map<String, dynamic>? donation = donationSnapshot.data();
 
@@ -163,6 +181,8 @@ class _DonationDetailsScreenState
           'claimedAt': FieldValue.serverTimestamp(),
           'ngoPickupConfirmed': false,
           'volunteerAssignmentStatus': 'pending',
+          'receivingLocation': receivingLocation,
+          'receivingAddress': receivingAddress,
           'updatedAt': FieldValue.serverTimestamp(),
         });
       });
@@ -932,7 +952,7 @@ class _StatusChip extends StatelessWidget {
         style: TextStyle(
           color: color,
           fontSize: 12,
-          fontWeight: FontWeight.w700,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );
