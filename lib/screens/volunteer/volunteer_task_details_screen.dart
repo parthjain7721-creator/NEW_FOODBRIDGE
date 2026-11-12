@@ -400,6 +400,19 @@ class _VolunteerTaskDetailsScreenState
           ),
         ),
       );
+    } on FirebaseException catch (exception, stackTrace) {
+      debugPrint(
+        'Route feasibility Firestore error: '
+        '${exception.code} — ${exception.message}',
+      );
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (_sameSession(volunteerId, donationId)) {
+        _showSnackBar(
+          _routeFeasibilityFirestoreError(exception),
+          isError: true,
+        );
+      }
     } catch (exception, stackTrace) {
       debugPrint('Route feasibility setup failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
@@ -407,8 +420,9 @@ class _VolunteerTaskDetailsScreenState
       if (_sameSession(volunteerId, donationId)) {
         _showSnackBar(
           exception is StateError
-              ? exception.message.toString()
-              : 'Unable to open route feasibility. Please try again.',
+              ? exception.message
+              : 'Unable to open route feasibility. '
+                  '(${exception.runtimeType})',
           isError: true,
         );
       }
@@ -418,6 +432,24 @@ class _VolunteerTaskDetailsScreenState
           _isRouteFeasibilityOpen = false;
         });
       }
+    }
+  }
+
+  String _routeFeasibilityFirestoreError(FirebaseException exception) {
+    switch (exception.code) {
+      case 'permission-denied':
+        return 'FoodBridge cannot read the receiving NGO’s location for '
+            'this assigned task. The Firestore security rules currently '
+            'prevent the volunteer from accessing it.';
+      case 'unauthenticated':
+        return 'Your session has ended. Please log in again.';
+      case 'unavailable':
+      case 'deadline-exceeded':
+        return 'Unable to load the receiving NGO location. '
+            'Check your connection and try again.';
+      default:
+        return 'Unable to load the receiving NGO location. '
+            '(${exception.code})';
     }
   }
 
