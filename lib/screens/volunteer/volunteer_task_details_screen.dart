@@ -8,6 +8,7 @@ import '../../services/delivery_service.dart';
 import '../../services/pickup_completion_service.dart';
 import 'donation_qr_scan_screen.dart';
 import 'pickup_inspection_screen.dart';
+import 'volunteer_route_feasibility_screen.dart';
 
 class VolunteerTaskDetailsScreen extends StatefulWidget {
   final String donationId;
@@ -34,6 +35,7 @@ class _VolunteerTaskDetailsScreenState
   bool _isVerificationFlowOpen = false;
   bool _isDeliveryFlowOpen = false;
   bool _isReviewFlowOpen = false;
+  bool _isRouteFeasibilityOpen = false;
 
   final PickupCompletionService _pickupCompletionService =
       PickupCompletionService();
@@ -43,7 +45,8 @@ class _VolunteerTaskDetailsScreenState
   bool get _isAnyFlowOpen =>
       _isVerificationFlowOpen ||
       _isDeliveryFlowOpen ||
-      _isReviewFlowOpen;
+      _isReviewFlowOpen ||
+      _isRouteFeasibilityOpen;
 
   @override
   void initState() {
@@ -291,6 +294,128 @@ class _VolunteerTaskDetailsScreenState
       if (mounted) {
         setState(() {
           _isVerificationFlowOpen = false;
+        });
+      }
+    }
+  }
+
+  Future<void> _openRouteFeasibility(
+    Map<String, dynamic> data,
+  ) async {
+    if (_isAnyFlowOpen) {
+      return;
+    }
+
+    final volunteerId = FirebaseAuth.instance.currentUser?.uid;
+    final donationId = widget.donationId;
+
+    if (volunteerId == null) {
+      _showSnackBar(
+        'Your session has ended. Please log in again.',
+        isError: true,
+      );
+      return;
+    }
+
+    final Object? pickup = data['pickupLocation'];
+    final Object? receivingNgoId = data['claimedByNgoId'];
+
+    if (pickup is! GeoPoint) {
+      _showSnackBar(
+        'The donor pickup location is not available.',
+        isError: true,
+      );
+      return;
+    }
+
+    if (receivingNgoId is! String || receivingNgoId.trim().isEmpty) {
+      _showSnackBar(
+        'The receiving NGO is not available for this task.',
+        isError: true,
+      );
+      return;
+    }
+
+    setState(() {
+      _isRouteFeasibilityOpen = true;
+    });
+
+    try {
+      final receivingSnapshot = await FirebaseFirestore.instance
+          .collection('users')
+          .doc(receivingNgoId)
+          .get(const GetOptions(source: Source.server));
+
+      if (!_sameSession(volunteerId, donationId)) {
+        return;
+      }
+
+      final receivingData = receivingSnapshot.data();
+
+      if (!receivingSnapshot.exists || receivingData == null) {
+        throw StateError(
+          'The receiving NGO profile is no longer available.',
+        );
+      }
+
+      final Object? rawSettings = receivingData['ngoReceivingProfile'];
+
+      final Map<String, dynamic>? settings =
+          rawSettings is Map<String, dynamic> ? rawSettings : null;
+
+      final Object? receivingLocation = settings?['location'];
+      final Object? rawAddress = settings?['address'];
+
+      final String receivingAddress =
+          rawAddress is String && rawAddress.trim().isNotEmpty
+              ? rawAddress.trim()
+              : 'Receiving address not recorded';
+
+      if (receivingLocation is! GeoPoint) {
+        throw StateError(
+          'The receiving NGO has not saved a receiving location.',
+        );
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => VolunteerRouteFeasibilityScreen(
+            donationId: donationId,
+            donationTitle: _text(
+              data['foodCategory'],
+              'Food donation',
+            ),
+            pickupLocation: pickup,
+            pickupAddress: _text(
+              data['pickupAddress'],
+              'Pickup address not recorded',
+            ),
+            receivingLocation: receivingLocation,
+            receivingAddress: receivingAddress,
+            pickupDeadline: _date(data['pickupDeadline']),
+          ),
+        ),
+      );
+    } catch (exception, stackTrace) {
+      debugPrint('Route feasibility setup failed: $exception');
+      debugPrintStack(stackTrace: stackTrace);
+
+      if (_sameSession(volunteerId, donationId)) {
+        _showSnackBar(
+          exception is StateError
+              ? exception.message.toString()
+              : 'Unable to open route feasibility. Please try again.',
+          isError: true,
+        );
+      }
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isRouteFeasibilityOpen = false;
         });
       }
     }
@@ -940,6 +1065,33 @@ class _VolunteerTaskDetailsScreenState
                         ),
                       ],
                     ),
+
+                    if (awaitingPickup && isVolunteer)
+                      _section('Route feasibility', [
+                        const Text(
+                          'Check whether the estimated driving route from your current '
+                          'location to the pickup point and then to the NGO receiving '
+                          'point can reasonably be completed before the pickup deadline.',
+                        ),
+                        const SizedBox(height: 8),
+                        const Text(
+                          'This is an estimate only. It does not assign the task, guarantee '
+                          'arrival, account for traffic conditions, or certify food safety.',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        const SizedBox(height: 16),
+                        FilledButton.icon(
+                          onPressed: !_isAnyFlowOpen
+                              ? () => _openRouteFeasibility(data)
+                              : null,
+                          icon: const Icon(Icons.route_outlined),
+                          label: Text(
+                            _isRouteFeasibilityOpen
+                                ? 'Opening route feasibility...'
+                                : 'Check route feasibility',
+                          ),
+                        ),
+                      ]),
 
                     _section(
                       'Donation Passport',
