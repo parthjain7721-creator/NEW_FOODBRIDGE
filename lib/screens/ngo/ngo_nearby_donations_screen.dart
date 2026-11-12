@@ -7,6 +7,7 @@ import 'package:geolocator/geolocator.dart';
 
 import 'donation_details_screen.dart';
 import 'ngo_receiving_settings_screen.dart';
+import 'ngo_route_preview_screen.dart';
 
 class NgoNearbyDonationsScreen extends StatefulWidget {
   const NgoNearbyDonationsScreen({super.key});
@@ -247,6 +248,59 @@ class _NgoNearbyDonationsScreenState
     }
   }
 
+  Future<void> _openRoutePreview(_NearbyDonation item) async {
+    if (_isOpeningScreen ||
+        _uid == null ||
+        _auth.currentUser?.uid != _uid) {
+      return;
+    }
+
+    final receiving = _receivingLocation;
+
+    if (receiving == null) {
+      return;
+    }
+
+    final data = item.document.data();
+    final Object? pickup = data['pickupLocation'];
+
+    if (pickup is! GeoPoint) {
+      return;
+    }
+
+    setState(() {
+      _isOpeningScreen = true;
+    });
+
+    try {
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute<void>(
+          builder: (_) => NgoRoutePreviewScreen(
+            donationId: item.document.id,
+            donationTitle: _text(
+              data['foodCategory'],
+              'Food donation',
+            ),
+            pickupLocation: pickup,
+            pickupAddress: _text(
+              data['pickupAddress'],
+              'Pickup address not recorded',
+            ),
+            receivingLocation: receiving,
+            receivingAddress: _receivingAddress,
+          ),
+        ),
+      );
+    } finally {
+      if (mounted) {
+        setState(() {
+          _isOpeningScreen = false;
+          _now = DateTime.now();
+        });
+      }
+    }
+  }
+
   List<_NearbyDonation> _findNearby(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> documents,
   ) {
@@ -361,8 +415,9 @@ class _NgoNearbyDonationsScreenState
             ),
             const SizedBox(height: 8),
             const Text(
-              'Sorted by geographical distance. Road travel time '
-              'and Match Priority are not calculated yet.',
+              'Sorted by geographical distance. You can preview the '
+              'road route and estimated driving time for an individual '
+              'donation. Match Priority is not calculated yet.',
               style: TextStyle(fontSize: 12),
             ),
             const SizedBox(height: 12),
@@ -439,6 +494,14 @@ class _NgoNearbyDonationsScreenState
                   : () => _openDonation(document.id),
               icon: const Icon(Icons.visibility_outlined),
               label: const Text('View donation details'),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: _isOpeningScreen
+                  ? null
+                  : () => _openRoutePreview(item),
+              icon: const Icon(Icons.route_outlined),
+              label: const Text('Preview road route'),
             ),
           ],
         ),
