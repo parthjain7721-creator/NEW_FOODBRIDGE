@@ -5,7 +5,7 @@
     <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION" />
 
     <application
-        android:label="foodbridge"
+        android:label="FoodBridge"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
 
