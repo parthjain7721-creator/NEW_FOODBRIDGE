@@ -338,7 +338,7 @@ class _LocationPickerScreenState
                             'https://tile.openstreetmap.org/'
                             '{z}/{x}/{y}.png',
                         userAgentPackageName:
-                            'FoodBridgeAcademicPrototype',
+                            'com.example.foodbridge',
                         maxNativeZoom: 19,
                       ),
                       if (_selectedPoint != null)
