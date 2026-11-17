@@ -2,27 +2,52 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+
+import '../../services/fcm_token_service.dart';
 import '../donor/donor_dashboard_screen.dart';
 import '../ngo/ngo_dashboard_screen.dart';
 import '../volunteer/volunteer_dashboard_screen.dart';
 import 'login_screen.dart';
 
+
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
+
 
   @override
   State<AuthGate> createState() => _AuthGateState();
 }
 
+
 class _AuthGateState extends State<AuthGate> {
   late final Stream<User?> _authStream;
+
+
+  final Set<String> _fcmRegisteredUids = <String>{};
+
 
   @override
   void initState() {
     super.initState();
 
+
     _authStream = FirebaseAuth.instance.authStateChanges();
   }
+
+
+  Future<void> _registerNotifications(String uid) async {
+    if (_fcmRegisteredUids.contains(uid)) {
+      return;
+    }
+
+
+    _fcmRegisteredUids.add(uid);
+
+
+    await FcmTokenService.instance
+        .requestPermissionAndRegisterToken();
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -38,63 +63,81 @@ class _AuthGateState extends State<AuthGate> {
           );
         }
 
+
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const _LoadingScreen(
             message: 'Checking your account...',
           );
         }
 
+
         final User? user = snapshot.data;
+
 
         if (user == null) {
           return const LoginScreen();
         }
 
+
         return UserProfileLoader(
           key: ValueKey<String>(user.uid),
           user: user,
+          onDashboardReady: _registerNotifications,
         );
       },
     );
   }
 }
 
+
 class UserProfileLoader extends StatefulWidget {
   final User user;
+  final Future<void> Function(String uid) onDashboardReady;
+
 
   const UserProfileLoader({
     super.key,
     required this.user,
+    required this.onDashboardReady,
   });
+
 
   @override
   State<UserProfileLoader> createState() =>
       _UserProfileLoaderState();
 }
 
-class _UserProfileLoaderState extends State<UserProfileLoader> {
+
+class _UserProfileLoaderState
+    extends State<UserProfileLoader> {
   late Stream<DocumentSnapshot<Map<String, dynamic>>> _profileStream;
+
 
   @override
   void initState() {
     super.initState();
 
+
     _connectProfile();
   }
+
 
   @override
   void didUpdateWidget(covariant UserProfileLoader oldWidget) {
     super.didUpdateWidget(oldWidget);
+
 
     if (oldWidget.user.uid != widget.user.uid) {
       _connectProfile();
     }
   }
 
+
   void _connectProfile() {
     debugPrint(
       'AuthGate: listening to users/${widget.user.uid}',
     );
+
 
     _profileStream = FirebaseFirestore.instance
         .collection('users')
@@ -102,11 +145,13 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
         .snapshots();
   }
 
+
   void _retry() {
     setState(() {
       _connectProfile();
     });
   }
+
 
   String _profileErrorMessage(Object? error) {
     if (error is FirebaseException) {
@@ -117,10 +162,12 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
               'Check the deployed users/{uid} security rules.\n\n'
               'Error code: ${error.code}';
 
+
         case 'unavailable':
           return 'Your login succeeded, but Firestore is currently '
               'unavailable. Check your Internet connection.\n\n'
               'Error code: ${error.code}';
+
 
         default:
           return 'Your login succeeded, but your profile could not '
@@ -130,8 +177,40 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
       }
     }
 
+
     return 'Your profile could not be loaded.\n\n$error';
   }
+
+
+  Widget _buildDashboard(String role) {
+    switch (role) {
+      case 'donor':
+        return const DonorDashboardScreen();
+
+
+      case 'ngo':
+        return const NgoDashboardScreen();
+
+
+      case 'volunteer':
+        return const VolunteerDashboardScreen();
+
+
+      default:
+        return _DiagnosticScreen(
+          title: 'Unsupported account role',
+          details:
+              'The profile contains an unsupported role: "$role".\n\n'
+              'Supported roles:\n'
+              'donor\n'
+              'ngo\n'
+              'volunteer\n\n'
+              'Profile path:\nusers/${widget.user.uid}',
+          onRetry: _retry,
+        );
+    }
+  }
+
 
   @override
   Widget build(BuildContext context) {
@@ -148,14 +227,17 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
           );
         }
 
+
         if (!snapshot.hasData) {
           return const _LoadingScreen(
             message: 'Loading your FoodBridge profile...',
           );
         }
 
+
         final DocumentSnapshot<Map<String, dynamic>> document =
             snapshot.data!;
+
 
         if (!document.exists) {
           return _DiagnosticScreen(
@@ -173,7 +255,9 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
           );
         }
 
+
         final Map<String, dynamic>? data = document.data();
+
 
         if (data == null) {
           return _DiagnosticScreen(
@@ -185,11 +269,14 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
           );
         }
 
+
         final Object? rawRole = data['role'];
+
 
         final String role = rawRole is String
             ? rawRole.trim().toLowerCase()
             : '';
+
 
         if (role.isEmpty) {
           return _DiagnosticScreen(
@@ -202,6 +289,7 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
           );
         }
 
+
         if (data['isActive'] == false) {
           return const _DiagnosticScreen(
             title: 'Account inactive',
@@ -211,33 +299,23 @@ class _UserProfileLoaderState extends State<UserProfileLoader> {
           );
         }
 
-        switch (role) {
-          case 'donor':
-            return const DonorDashboardScreen();
 
-          case 'ngo':
-            return const NgoDashboardScreen();
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) {
+            return;
+          }
 
-          case 'volunteer':
-            return const VolunteerDashboardScreen();
 
-          default:
-            return _DiagnosticScreen(
-              title: 'Unsupported account role',
-              details:
-                  'The profile contains an unsupported role: "$role".\n\n'
-                  'Supported roles:\n'
-                  'donor\n'
-                  'ngo\n'
-                  'volunteer\n\n'
-                  'Profile path:\nusers/${widget.user.uid}',
-              onRetry: _retry,
-            );
-        }
+          widget.onDashboardReady(widget.user.uid);
+        });
+
+
+        return _buildDashboard(role);
       },
     );
   }
 }
+
 
 Future<void> _signOut(BuildContext context) async {
   try {
@@ -245,9 +323,11 @@ Future<void> _signOut(BuildContext context) async {
   } catch (error) {
     debugPrint('Sign-out failed: $error');
 
+
     if (!context.mounted) {
       return;
     }
+
 
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -260,16 +340,19 @@ Future<void> _signOut(BuildContext context) async {
   }
 }
 
+
 class _DiagnosticScreen extends StatelessWidget {
   final String title;
   final String details;
   final VoidCallback? onRetry;
+
 
   const _DiagnosticScreen({
     required this.title,
     required this.details,
     this.onRetry,
   });
+
 
   @override
   Widget build(BuildContext context) {
@@ -322,12 +405,15 @@ class _DiagnosticScreen extends StatelessWidget {
   }
 }
 
+
 class _LoadingScreen extends StatelessWidget {
   final String message;
+
 
   const _LoadingScreen({
     required this.message,
   });
+
 
   @override
   Widget build(BuildContext context) {
