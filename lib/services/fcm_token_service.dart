@@ -145,6 +145,24 @@ class FcmTokenService {
     }
   }
 
+  Future<void> signOutAndCleanup() async {
+    final String? uid = _auth.currentUser?.uid;
+
+    debugPrint(
+      'FcmTokenService: signing out and cleaning up tokens. uid=$uid',
+    );
+
+    if (uid != null && uid.isNotEmpty) {
+      await _deleteTokensForUser(uid);
+    }
+
+    await _auth.signOut();
+
+    debugPrint(
+      'FcmTokenService: user signed out.',
+    );
+  }
+
   Future<void> _saveToken(String token) async {
     final String? uid = _auth.currentUser?.uid;
 
@@ -226,17 +244,38 @@ class FcmTokenService {
               .where('userId', isEqualTo: uid)
               .get();
 
+      if (snapshot.docs.isEmpty) {
+        debugPrint(
+          'FcmTokenService: no FCM tokens found for uid=$uid',
+        );
+
+        return;
+      }
+
       for (final QueryDocumentSnapshot<Map<String, dynamic>> document
           in snapshot.docs) {
         await document.reference.delete();
+
+        debugPrint(
+          'FcmTokenService: deleted FCM token ${document.id} '
+          'for uid=$uid',
+        );
       }
 
       debugPrint(
-        'FcmTokenService: deleted FCM tokens for uid=$uid',
+        'FcmTokenService: deleted all FCM tokens for uid=$uid',
       );
+    } on FirebaseException catch (exception, stackTrace) {
+      debugPrint(
+        'FcmTokenService: deleting FCM tokens failed: '
+        '${exception.code} — ${exception.message}',
+      );
+
+      debugPrintStack(stackTrace: stackTrace);
     } catch (exception, stackTrace) {
       debugPrint(
-        'FcmTokenService: deleting FCM tokens failed: $exception',
+        'FcmTokenService: unexpected FCM token deletion failure: '
+        '$exception',
       );
 
       debugPrintStack(stackTrace: stackTrace);

@@ -1,7 +1,8 @@
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-
 
 import '../../services/fcm_token_service.dart';
 import '../donor/donor_dashboard_screen.dart';
@@ -9,45 +10,35 @@ import '../ngo/ngo_dashboard_screen.dart';
 import '../volunteer/volunteer_dashboard_screen.dart';
 import 'login_screen.dart';
 
-
 class AuthGate extends StatefulWidget {
   const AuthGate({super.key});
-
 
   @override
   State<AuthGate> createState() => _AuthGateState();
 }
 
-
 class _AuthGateState extends State<AuthGate> {
   late final Stream<User?> _authStream;
 
-
   final Set<String> _fcmRegisteredUids = <String>{};
-
 
   @override
   void initState() {
     super.initState();
 
-
     _authStream = FirebaseAuth.instance.authStateChanges();
   }
-
 
   Future<void> _registerNotifications(String uid) async {
     if (_fcmRegisteredUids.contains(uid)) {
       return;
     }
 
-
     _fcmRegisteredUids.add(uid);
-
 
     await FcmTokenService.instance
         .requestPermissionAndRegisterToken();
   }
-
 
   @override
   Widget build(BuildContext context) {
@@ -63,21 +54,17 @@ class _AuthGateState extends State<AuthGate> {
           );
         }
 
-
         if (snapshot.connectionState == ConnectionState.waiting) {
           return const _LoadingScreen(
             message: 'Checking your account...',
           );
         }
 
-
         final User? user = snapshot.data;
-
 
         if (user == null) {
           return const LoginScreen();
         }
-
 
         return UserProfileLoader(
           key: ValueKey<String>(user.uid),
@@ -89,11 +76,9 @@ class _AuthGateState extends State<AuthGate> {
   }
 }
 
-
 class UserProfileLoader extends StatefulWidget {
   final User user;
   final Future<void> Function(String uid) onDashboardReady;
-
 
   const UserProfileLoader({
     super.key,
@@ -101,43 +86,67 @@ class UserProfileLoader extends StatefulWidget {
     required this.onDashboardReady,
   });
 
-
   @override
   State<UserProfileLoader> createState() =>
       _UserProfileLoaderState();
 }
 
-
 class _UserProfileLoaderState
     extends State<UserProfileLoader> {
-  late Stream<DocumentSnapshot<Map<String, dynamic>>> _profileStream;
+  Stream<DocumentSnapshot<Map<String, dynamic>>>? _profileStream;
 
+  StreamSubscription<User?>? _authSubscription;
 
   @override
   void initState() {
     super.initState();
 
-
     _connectProfile();
-  }
 
+    _authSubscription = FirebaseAuth.instance
+        .authStateChanges()
+        .listen(_handleAuthChange);
+  }
 
   @override
   void didUpdateWidget(covariant UserProfileLoader oldWidget) {
     super.didUpdateWidget(oldWidget);
-
 
     if (oldWidget.user.uid != widget.user.uid) {
       _connectProfile();
     }
   }
 
+  @override
+  void dispose() {
+    _authSubscription?.cancel();
+    super.dispose();
+  }
+
+  void _handleAuthChange(User? user) {
+    if (!mounted) {
+      return;
+    }
+
+    if (user == null || user.uid != widget.user.uid) {
+      setState(() {
+        _profileStream = null;
+      });
+
+      return;
+    }
+  }
 
   void _connectProfile() {
+    if (FirebaseAuth.instance.currentUser?.uid != widget.user.uid) {
+      _profileStream = null;
+
+      return;
+    }
+
     debugPrint(
       'AuthGate: listening to users/${widget.user.uid}',
     );
-
 
     _profileStream = FirebaseFirestore.instance
         .collection('users')
@@ -145,13 +154,11 @@ class _UserProfileLoaderState
         .snapshots();
   }
 
-
   void _retry() {
     setState(() {
       _connectProfile();
     });
   }
-
 
   String _profileErrorMessage(Object? error) {
     if (error is FirebaseException) {
@@ -162,12 +169,10 @@ class _UserProfileLoaderState
               'Check the deployed users/{uid} security rules.\n\n'
               'Error code: ${error.code}';
 
-
         case 'unavailable':
           return 'Your login succeeded, but Firestore is currently '
               'unavailable. Check your Internet connection.\n\n'
               'Error code: ${error.code}';
-
 
         default:
           return 'Your login succeeded, but your profile could not '
@@ -177,24 +182,19 @@ class _UserProfileLoaderState
       }
     }
 
-
     return 'Your profile could not be loaded.\n\n$error';
   }
-
 
   Widget _buildDashboard(String role) {
     switch (role) {
       case 'donor':
         return const DonorDashboardScreen();
 
-
       case 'ngo':
         return const NgoDashboardScreen();
 
-
       case 'volunteer':
         return const VolunteerDashboardScreen();
-
 
       default:
         return _DiagnosticScreen(
@@ -211,13 +211,31 @@ class _UserProfileLoaderState
     }
   }
 
-
   @override
   Widget build(BuildContext context) {
+    final User? currentUser = FirebaseAuth.instance.currentUser;
+
+    if (currentUser == null || currentUser.uid != widget.user.uid) {
+      return const LoginScreen();
+    }
+
+    final Stream<DocumentSnapshot<Map<String, dynamic>>>? profileStream =
+        _profileStream;
+
+    if (profileStream == null) {
+      return const LoginScreen();
+    }
+
     return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: _profileStream,
+      stream: profileStream,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
+          final User? activeUser = FirebaseAuth.instance.currentUser;
+
+          if (activeUser == null || activeUser.uid != widget.user.uid) {
+            return const LoginScreen();
+          }
+
           return _DiagnosticScreen(
             title: 'Unable to load profile',
             details:
@@ -227,17 +245,14 @@ class _UserProfileLoaderState
           );
         }
 
-
         if (!snapshot.hasData) {
           return const _LoadingScreen(
             message: 'Loading your FoodBridge profile...',
           );
         }
 
-
         final DocumentSnapshot<Map<String, dynamic>> document =
             snapshot.data!;
-
 
         if (!document.exists) {
           return _DiagnosticScreen(
@@ -255,9 +270,7 @@ class _UserProfileLoaderState
           );
         }
 
-
         final Map<String, dynamic>? data = document.data();
-
 
         if (data == null) {
           return _DiagnosticScreen(
@@ -269,14 +282,11 @@ class _UserProfileLoaderState
           );
         }
 
-
         final Object? rawRole = data['role'];
-
 
         final String role = rawRole is String
             ? rawRole.trim().toLowerCase()
             : '';
-
 
         if (role.isEmpty) {
           return _DiagnosticScreen(
@@ -289,7 +299,6 @@ class _UserProfileLoaderState
           );
         }
 
-
         if (data['isActive'] == false) {
           return const _DiagnosticScreen(
             title: 'Account inactive',
@@ -299,16 +308,13 @@ class _UserProfileLoaderState
           );
         }
 
-
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) {
             return;
           }
 
-
           widget.onDashboardReady(widget.user.uid);
         });
-
 
         return _buildDashboard(role);
       },
@@ -316,18 +322,15 @@ class _UserProfileLoaderState
   }
 }
 
-
 Future<void> _signOut(BuildContext context) async {
   try {
-    await FirebaseAuth.instance.signOut();
+    await FcmTokenService.instance.signOutAndCleanup();
   } catch (error) {
     debugPrint('Sign-out failed: $error');
-
 
     if (!context.mounted) {
       return;
     }
-
 
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -340,19 +343,16 @@ Future<void> _signOut(BuildContext context) async {
   }
 }
 
-
 class _DiagnosticScreen extends StatelessWidget {
   final String title;
   final String details;
   final VoidCallback? onRetry;
-
 
   const _DiagnosticScreen({
     required this.title,
     required this.details,
     this.onRetry,
   });
-
 
   @override
   Widget build(BuildContext context) {
@@ -405,15 +405,12 @@ class _DiagnosticScreen extends StatelessWidget {
   }
 }
 
-
 class _LoadingScreen extends StatelessWidget {
   final String message;
-
 
   const _LoadingScreen({
     required this.message,
   });
-
 
   @override
   Widget build(BuildContext context) {

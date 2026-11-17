@@ -1,6 +1,7 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/fcm_token_service.dart';
 import 'create_donation_screen.dart';
 import 'donor_donation_history_screen.dart';
 import 'donor_pickup_confirmations_screen.dart';
@@ -27,7 +28,7 @@ class _DonorDashboardScreenState
     });
 
     try {
-      await FirebaseAuth.instance.signOut();
+      await FcmTokenService.instance.signOutAndCleanup();
 
       // AuthGate handles the transition back to Login.
       // Do not push a separate LoginScreen here.

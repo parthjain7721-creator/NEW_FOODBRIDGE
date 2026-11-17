@@ -1,61 +1,49 @@
 import 'dart:async';
 
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-
+import '../../services/fcm_token_service.dart';
 import 'donation_details_screen.dart';
 import 'ngo_claimed_donations_screen.dart';
 import 'ngo_delivery_inbox_screen.dart';
 import 'ngo_nearby_donations_screen.dart';
 import 'ngo_receiving_settings_screen.dart';
 
-
 class NgoDashboardScreen extends StatefulWidget {
   const NgoDashboardScreen({super.key});
-
 
   @override
   State<NgoDashboardScreen> createState() =>
       _NgoDashboardScreenState();
 }
 
-
 class _NgoDashboardScreenState
     extends State<NgoDashboardScreen> {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
 
-
   late Stream<QuerySnapshot<Map<String, dynamic>>> _donationsStream;
-
 
   Timer? _countdownTimer;
   DateTime _now = DateTime.now();
 
-
   String? _claimingDonationId;
-
 
   bool _isSigningOut = false;
   bool _isOpeningScreen = false;
-
 
   bool get _isBusy =>
       _claimingDonationId != null ||
       _isSigningOut ||
       _isOpeningScreen;
 
-
   @override
   void initState() {
     super.initState();
 
-
     _connectDonations();
-
 
     _countdownTimer = Timer.periodic(
       const Duration(seconds: 1),
@@ -64,7 +52,6 @@ class _NgoDashboardScreenState
           return;
         }
 
-
         setState(() {
           _now = DateTime.now();
         });
@@ -72,13 +59,11 @@ class _NgoDashboardScreenState
     );
   }
 
-
   @override
   void dispose() {
     _countdownTimer?.cancel();
     super.dispose();
   }
-
 
   void _connectDonations() {
     _donationsStream = _firestore
@@ -87,12 +72,10 @@ class _NgoDashboardScreenState
         .snapshots();
   }
 
-
   void _retryDonations() {
     if (_isBusy) {
       return;
     }
-
 
     setState(() {
       _now = DateTime.now();
@@ -100,20 +83,16 @@ class _NgoDashboardScreenState
     });
   }
 
-
   bool _sameAccount(String uid) {
     return mounted && _auth.currentUser?.uid == uid;
   }
-
 
   Future<void> _claimDonation(String donationId) async {
     if (_isBusy) {
       return;
     }
 
-
     final User? user = _auth.currentUser;
-
 
     if (user == null) {
       _showMessage(
@@ -123,31 +102,24 @@ class _NgoDashboardScreenState
       return;
     }
 
-
     final String uid = user.uid;
-
 
     setState(() {
       _claimingDonationId = donationId;
     });
 
-
     bool claimSucceeded = false;
-
 
     try {
       final DocumentReference<Map<String, dynamic>> donationRef =
           _firestore.collection('donations').doc(donationId);
 
-
       final DocumentReference<Map<String, dynamic>> profileRef =
           _firestore.collection('users').doc(uid);
-
 
       await _firestore.runTransaction<void>((transaction) async {
         final profileSnapshot = await transaction.get(profileRef);
         final donationSnapshot = await transaction.get(donationRef);
-
 
         if (_auth.currentUser?.uid != uid) {
           throw StateError(
@@ -155,9 +127,7 @@ class _NgoDashboardScreenState
           );
         }
 
-
         final Map<String, dynamic>? profile = profileSnapshot.data();
-
 
         if (profile == null ||
             profile['role'] != 'ngo' ||
@@ -167,15 +137,12 @@ class _NgoDashboardScreenState
           );
         }
 
-
         final Object? rawSettings = profile['ngoReceivingProfile'];
         final Map<String, dynamic>? settings =
             rawSettings is Map<String, dynamic> ? rawSettings : null;
 
-
         final Object? receivingLocation = settings?['location'];
         final Object? rawReceivingAddress = settings?['address'];
-
 
         if (receivingLocation is! GeoPoint) {
           throw StateError(
@@ -183,26 +150,21 @@ class _NgoDashboardScreenState
           );
         }
 
-
         final String receivingAddress =
             rawReceivingAddress is String &&
                     rawReceivingAddress.trim().isNotEmpty
                 ? rawReceivingAddress.trim()
                 : 'Receiving address not recorded';
 
-
         final Map<String, dynamic>? donation = donationSnapshot.data();
-
 
         if (!donationSnapshot.exists || donation == null) {
           throw StateError('This donation no longer exists.');
         }
 
-
         if (donation['donorId'] == uid) {
           throw StateError('You cannot claim your own donation.');
         }
-
 
         if (donation['status'] != 'available') {
           throw StateError(
@@ -210,9 +172,7 @@ class _NgoDashboardScreenState
           );
         }
 
-
         final Object? eligibility = donation['eligibilityStatus'];
-
 
         if (eligibility != 'eligible' && eligibility != 'urgent') {
           throw StateError(
@@ -221,9 +181,7 @@ class _NgoDashboardScreenState
           );
         }
 
-
         final Object? rawDeadline = donation['pickupDeadline'];
-
 
         if (rawDeadline is! Timestamp) {
           throw StateError(
@@ -231,16 +189,13 @@ class _NgoDashboardScreenState
           );
         }
 
-
         if (!rawDeadline.toDate().isAfter(DateTime.now())) {
           throw StateError('The Food Rescue Window has closed.');
         }
 
-
         final Object? claimedByNgoId = donation['claimedByNgoId'];
         final Object? assignedVolunteerId =
             donation['assignedVolunteerId'];
-
 
         if (claimedByNgoId != null && claimedByNgoId != '') {
           throw StateError(
@@ -248,14 +203,12 @@ class _NgoDashboardScreenState
           );
         }
 
-
         if (assignedVolunteerId != null &&
             assignedVolunteerId != '') {
           throw StateError(
             'This donation already has an assigned volunteer.',
           );
         }
-
 
         transaction.update(donationRef, {
           'status': 'claimed',
@@ -269,7 +222,6 @@ class _NgoDashboardScreenState
         });
       });
 
-
       claimSucceeded = true;
     } on FirebaseException catch (exception, stackTrace) {
       debugPrint(
@@ -277,7 +229,6 @@ class _NgoDashboardScreenState
         '${exception.code} - ${exception.message}',
       );
       debugPrintStack(stackTrace: stackTrace);
-
 
       if (_sameAccount(uid)) {
         _showMessage(
@@ -301,7 +252,6 @@ class _NgoDashboardScreenState
       debugPrint('Unexpected donation claim error: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
-
       if (_sameAccount(uid)) {
         _showMessage(
           'Unable to confirm the claim result. '
@@ -317,11 +267,9 @@ class _NgoDashboardScreenState
       }
     }
 
-
     if (!claimSucceeded || !_sameAccount(uid)) {
       return;
     }
-
 
     _showMessage(
       'Donation claimed. Confirm capacity and pickup time '
@@ -329,33 +277,29 @@ class _NgoDashboardScreenState
       Colors.green.shade700,
     );
 
-
     await _openDonationDetails(donationId);
   }
-
 
   Future<void> _logout() async {
     if (_isBusy) {
       return;
     }
 
-
     setState(() {
       _isSigningOut = true;
     });
 
-
     try {
-      await _auth.signOut();
+      await FcmTokenService.instance.signOutAndCleanup();
+
+      // AuthGate handles the transition to Login.
     } catch (exception, stackTrace) {
       debugPrint('NGO logout failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
 
-
       if (!mounted) {
         return;
       }
-
 
       _showMessage(
         'Unable to sign out. Please try again.',
@@ -370,12 +314,10 @@ class _NgoDashboardScreenState
     }
   }
 
-
   Future<void> _openScreen(Widget screen) async {
     if (_isBusy) {
       return;
     }
-
 
     if (_auth.currentUser == null) {
       _showMessage(
@@ -385,11 +327,9 @@ class _NgoDashboardScreenState
       return;
     }
 
-
     setState(() {
       _isOpeningScreen = true;
     });
-
 
     try {
       await Navigator.of(context).push<void>(
@@ -407,26 +347,21 @@ class _NgoDashboardScreenState
     }
   }
 
-
   Future<void> _openReceivingSettings() async {
     await _openScreen(const NgoReceivingSettingsScreen());
   }
-
 
   Future<void> _openNearbyDonations() async {
     await _openScreen(const NgoNearbyDonationsScreen());
   }
 
-
   Future<void> _openClaimedDonations() async {
     await _openScreen(const NgoClaimedDonationsScreen());
   }
 
-
   Future<void> _openDeliveryInbox() async {
     await _openScreen(const NgoDeliveryInboxScreen());
   }
-
 
   Future<void> _openDonationDetails(String donationId) async {
     await _openScreen(
@@ -436,60 +371,48 @@ class _NgoDashboardScreenState
     );
   }
 
-
   DateTime? _readDateTime(dynamic value) {
     if (value is Timestamp) {
       return value.toDate();
     }
 
-
     if (value is DateTime) {
       return value;
     }
 
-
     return null;
   }
-
 
   String _readText(dynamic value, String fallback) {
     if (value is String && value.trim().isNotEmpty) {
       return value.trim();
     }
 
-
     return fallback;
   }
-
 
   String _quantityLabel(dynamic value) {
     if (value is num && value.isFinite && value > 0) {
       return '$value portions/packets';
     }
 
-
     return 'Not recorded';
   }
-
 
   bool _windowOpen(DateTime? deadline) {
     return deadline != null && deadline.isAfter(_now);
   }
 
-
   bool _ordinaryEligibility(String value) {
     return value == 'eligible' || value == 'urgent';
   }
 
-
   bool _canClaimListing(Map<String, dynamic> data) {
     final String? uid = _auth.currentUser?.uid;
-
 
     if (uid == null || data['donorId'] == uid) {
       return false;
     }
-
 
     return _ordinaryEligibility(
           _readText(data['eligibilityStatus'], ''),
@@ -499,77 +422,61 @@ class _NgoDashboardScreenState
         );
   }
 
-
   String _formatRemainingTime(DateTime? deadline) {
     if (deadline == null) {
       return 'Pickup deadline not recorded';
     }
 
-
     final Duration remaining = deadline.difference(_now);
-
 
     if (remaining <= Duration.zero) {
       return 'Pickup window closed';
     }
 
-
     final int hours = remaining.inHours;
     final int minutes = remaining.inMinutes.remainder(60);
     final int seconds = remaining.inSeconds.remainder(60);
-
 
     if (hours > 0) {
       return '${hours}h ${minutes}m ${seconds}s remaining';
     }
 
-
     return '${minutes}m ${seconds}s remaining';
   }
-
 
   Color _countdownColor(DateTime? deadline) {
     if (deadline == null) {
       return Colors.grey.shade700;
     }
 
-
     final Duration remaining = deadline.difference(_now);
-
 
     if (remaining <= Duration.zero) {
       return Colors.red.shade700;
     }
 
-
     if (remaining <= const Duration(minutes: 30)) {
       return Colors.orange.shade800;
     }
 
-
     return Colors.green.shade700;
   }
-
 
   String _formatDateTime(DateTime? value) {
     if (value == null) {
       return 'Not recorded';
     }
 
-
     final DateTime local = value.toLocal();
-
 
     String twoDigits(int number) {
       return number.toString().padLeft(2, '0');
     }
 
-
     return '${twoDigits(local.day)}/${twoDigits(local.month)}/'
         '${local.year} ${twoDigits(local.hour)}:'
         '${twoDigits(local.minute)}';
   }
-
 
   String _storageLabel(String value) {
     switch (value) {
@@ -583,7 +490,6 @@ class _NgoDashboardScreenState
         return 'Unknown';
     }
   }
-
 
   String _eligibilityLabel(String value) {
     switch (value) {
@@ -600,7 +506,6 @@ class _NgoDashboardScreenState
     }
   }
 
-
   Color _eligibilityColor(String value) {
     switch (value) {
       case 'eligible':
@@ -616,7 +521,6 @@ class _NgoDashboardScreenState
     }
   }
 
-
   int _compareDonations(
     QueryDocumentSnapshot<Map<String, dynamic>> first,
     QueryDocumentSnapshot<Map<String, dynamic>> second,
@@ -624,53 +528,42 @@ class _NgoDashboardScreenState
     final Map<String, dynamic> firstData = first.data();
     final Map<String, dynamic> secondData = second.data();
 
-
     final DateTime? firstDeadline =
         _readDateTime(firstData['pickupDeadline']);
-
 
     final DateTime? secondDeadline =
         _readDateTime(secondData['pickupDeadline']);
 
-
     final bool firstClaimable = _canClaimListing(firstData);
     final bool secondClaimable = _canClaimListing(secondData);
-
 
     if (firstClaimable != secondClaimable) {
       return firstClaimable ? -1 : 1;
     }
 
-
     if (firstDeadline == null && secondDeadline == null) {
       return first.id.compareTo(second.id);
     }
-
 
     if (firstDeadline == null) {
       return 1;
     }
 
-
     if (secondDeadline == null) {
       return -1;
     }
 
-
     final int comparison = firstDeadline.compareTo(secondDeadline);
-
 
     return comparison != 0
         ? comparison
         : first.id.compareTo(second.id);
   }
 
-
   void _showMessage(String message, Color color) {
     if (!mounted) {
       return;
     }
-
 
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
@@ -683,7 +576,6 @@ class _NgoDashboardScreenState
         ),
       );
   }
-
 
   Widget _buildNavigationCard({
     required IconData icon,
@@ -732,7 +624,6 @@ class _NgoDashboardScreenState
     );
   }
 
-
   Widget _buildNavigationSection() {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -780,7 +671,6 @@ class _NgoDashboardScreenState
     );
   }
 
-
   Widget _buildListingsError() {
     return Card(
       child: Padding(
@@ -809,7 +699,6 @@ class _NgoDashboardScreenState
     );
   }
 
-
   Widget _buildFooter() {
     return Padding(
       padding: const EdgeInsets.symmetric(
@@ -827,7 +716,6 @@ class _NgoDashboardScreenState
     );
   }
 
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -843,16 +731,13 @@ class _NgoDashboardScreenState
                   await _openReceivingSettings();
                   break;
 
-
                 case 'nearby':
                   await _openNearbyDonations();
                   break;
 
-
                 case 'claimed':
                   await _openClaimedDonations();
                   break;
-
 
                 case 'deliveries':
                   await _openDeliveryInbox();
@@ -900,9 +785,7 @@ class _NgoDashboardScreenState
                 snapshot.data?.docs.toList() ??
                 <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
-
             donations.sort(_compareDonations);
-
 
             final int claimableCount = donations
                 .where(
@@ -910,16 +793,13 @@ class _NgoDashboardScreenState
                 )
                 .length;
 
-
             final bool showListings =
                 !snapshot.hasError &&
                 snapshot.hasData &&
                 donations.isNotEmpty;
 
-
             final int contentCount =
                 showListings ? donations.length : 1;
-
 
             return ListView.builder(
               padding: const EdgeInsets.all(16),
@@ -928,7 +808,6 @@ class _NgoDashboardScreenState
                 if (index == 0) {
                   return _buildNavigationSection();
                 }
-
 
                 if (index == 1) {
                   if (snapshot.hasError || !snapshot.hasData) {
@@ -944,7 +823,6 @@ class _NgoDashboardScreenState
                     );
                   }
 
-
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 16),
                     child: _buildHeader(
@@ -954,19 +832,15 @@ class _NgoDashboardScreenState
                   );
                 }
 
-
                 final int contentIndex = index - 2;
-
 
                 if (contentIndex == contentCount) {
                   return _buildFooter();
                 }
 
-
                 if (snapshot.hasError) {
                   return _buildListingsError();
                 }
-
 
                 if (!snapshot.hasData) {
                   return const Padding(
@@ -977,11 +851,9 @@ class _NgoDashboardScreenState
                   );
                 }
 
-
                 if (donations.isEmpty) {
                   return const _EmptyDonationsView();
                 }
-
 
                 return _buildDonationCard(
                   donations[contentIndex],
@@ -993,7 +865,6 @@ class _NgoDashboardScreenState
       ),
     );
   }
-
 
   Widget _buildHeader({
     required int listingCount,
@@ -1038,46 +909,36 @@ class _NgoDashboardScreenState
     );
   }
 
-
   Widget _buildDonationCard(
     QueryDocumentSnapshot<Map<String, dynamic>> document,
   ) {
     final Map<String, dynamic> donation = document.data();
 
-
     final DateTime? deadline =
         _readDateTime(donation['pickupDeadline']);
-
 
     final String category = _readText(
       donation['foodCategory'],
       'Food donation',
     );
 
-
     final String eligibility = _readText(
       donation['eligibilityStatus'],
       'unknown',
     );
 
-
     final bool isOwnDonation =
         donation['donorId'] == _auth.currentUser?.uid;
-
 
     final bool windowOpen = _windowOpen(deadline);
     final bool canClaim = _canClaimListing(donation);
 
-
     final bool isClaimingThis =
         _claimingDonationId == document.id;
 
-
     final Color countdownColor = _countdownColor(deadline);
 
-
     final String buttonLabel;
-
 
     if (isClaimingThis) {
       buttonLabel = 'Claiming...';
@@ -1094,7 +955,6 @@ class _NgoDashboardScreenState
     } else {
       buttonLabel = 'Claim donation';
     }
-
 
     return Card(
       key: ValueKey('listing-${document.id}'),
@@ -1208,19 +1068,16 @@ class _NgoDashboardScreenState
   }
 }
 
-
 class _InfoRow extends StatelessWidget {
   final IconData icon;
   final String label;
   final String value;
-
 
   const _InfoRow({
     required this.icon,
     required this.label,
     required this.value,
   });
-
 
   @override
   Widget build(BuildContext context) {
@@ -1261,17 +1118,14 @@ class _InfoRow extends StatelessWidget {
   }
 }
 
-
 class _StatusChip extends StatelessWidget {
   final String label;
   final Color color;
-
 
   const _StatusChip({
     required this.label,
     required this.color,
   });
-
 
   @override
   Widget build(BuildContext context) {
@@ -1296,10 +1150,8 @@ class _StatusChip extends StatelessWidget {
   }
 }
 
-
 class _EmptyDonationsView extends StatelessWidget {
   const _EmptyDonationsView();
-
 
   @override
   Widget build(BuildContext context) {

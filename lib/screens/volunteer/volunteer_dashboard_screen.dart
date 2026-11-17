@@ -4,6 +4,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../../services/fcm_token_service.dart';
 import 'volunteer_activity_screen.dart';
 import 'volunteer_task_details_screen.dart';
 
@@ -482,7 +483,7 @@ class _VolunteerDashboardScreenState
     });
 
     try {
-      await _auth.signOut();
+      await FcmTokenService.instance.signOutAndCleanup();
 
       // AuthGate handles the transition to Login.
     } catch (exception, stackTrace) {
