@@ -1,64 +1,96 @@
 import 'dart:async';
 
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:geolocator/geolocator.dart';
 
+
+import '../../models/ngo_need_model.dart';
+import '../../services/matching_service.dart';
+import '../../services/route_service.dart';
 import 'donation_details_screen.dart';
 import 'ngo_receiving_settings_screen.dart';
 import 'ngo_route_preview_screen.dart';
 
+
 class NgoNearbyDonationsScreen extends StatefulWidget {
   const NgoNearbyDonationsScreen({super.key});
+
 
   @override
   State<NgoNearbyDonationsScreen> createState() =>
       _NgoNearbyDonationsScreenState();
 }
 
+
 class _NgoNearbyDonationsScreenState
     extends State<NgoNearbyDonationsScreen> {
   static const double _radiusMetres = 10000;
+  static const int _maximumRouteCalculations = 10;
+
 
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseAuth _auth = FirebaseAuth.instance;
+  final RouteService _routeService = RouteService();
+
 
   Stream<QuerySnapshot<Map<String, dynamic>>>? _donationsStream;
+
 
   StreamSubscription<User?>? _authSubscription;
   Timer? _timer;
 
+
   String? _uid;
   String? _loadError;
 
+
   GeoPoint? _receivingLocation;
   String _receivingAddress = '';
+  int _requiredQuantity = 0;
+
 
   final Set<String> _preferredCategories = <String>{};
+
+
+  final Map<String, MatchPriorityResult?> _matchResults =
+      <String, MatchPriorityResult?>{};
+
+
+  final Set<String> _calculatingMatches = <String>{};
+
 
   bool _isLoading = true;
   bool _isOpeningScreen = false;
 
+
   int _loadVersion = 0;
 
+
   DateTime _now = DateTime.now();
+
 
   @override
   void initState() {
     super.initState();
 
+
     _uid = _auth.currentUser?.uid;
     _loadProfile();
+
 
     _authSubscription = _auth.authStateChanges().listen((user) {
       if (!mounted || user?.uid == _uid) {
         return;
       }
 
+
       _uid = user?.uid;
       _loadProfile();
     });
+
 
     _timer = Timer.periodic(
       const Duration(seconds: 15),
@@ -72,6 +104,7 @@ class _NgoNearbyDonationsScreenState
     );
   }
 
+
   @override
   void dispose() {
     _loadVersion++;
@@ -80,15 +113,18 @@ class _NgoNearbyDonationsScreenState
     super.dispose();
   }
 
+
   String _text(dynamic value, String fallback) {
     return value is String && value.trim().isNotEmpty
         ? value.trim()
         : fallback;
   }
 
+
   DateTime? _date(dynamic value) {
     return value is Timestamp ? value.toDate() : null;
   }
+
 
   bool _loadStillCurrent(int version, String? uid) {
     return mounted &&
@@ -96,9 +132,11 @@ class _NgoNearbyDonationsScreenState
         _auth.currentUser?.uid == uid;
   }
 
+
   Future<void> _loadProfile() async {
     final int version = ++_loadVersion;
     final String? uid = _auth.currentUser?.uid;
+
 
     setState(() {
       _uid = uid;
@@ -106,25 +144,33 @@ class _NgoNearbyDonationsScreenState
       _loadError = null;
       _receivingLocation = null;
       _receivingAddress = '';
+      _requiredQuantity = 0;
       _preferredCategories.clear();
+      _matchResults.clear();
+      _calculatingMatches.clear();
       _donationsStream = null;
     });
+
 
     try {
       if (uid == null) {
         throw StateError('Please log in with your NGO account.');
       }
 
+
       final snapshot = await _firestore
           .collection('users')
           .doc(uid)
           .get(const GetOptions(source: Source.server));
 
+
       if (!_loadStillCurrent(version, uid)) {
         return;
       }
 
+
       final profile = snapshot.data();
+
 
       if (profile == null ||
           profile['role'] != 'ngo' ||
@@ -132,26 +178,42 @@ class _NgoNearbyDonationsScreenState
         throw StateError('An active NGO profile is required.');
       }
 
+
       final Object? rawSettings = profile['ngoReceivingProfile'];
+
 
       final Map<String, dynamic>? settings =
           rawSettings is Map<String, dynamic>
               ? rawSettings
               : null;
 
+
       final Object? location = settings?['location'];
+      
+
+      final NgoNeedModel ngoNeed =
+          NgoNeedModel.fromMap(
+        settings ?? <String, dynamic>{},
+      );
+
 
       setState(() {
         _receivingLocation =
             location is GeoPoint ? location : null;
+
 
         _receivingAddress = _text(
           settings?['address'],
           'Receiving address not recorded',
         );
 
+
+        _requiredQuantity = ngoNeed.requiredQuantity;
+
+
         final Object? categories =
             settings?['preferredFoodCategories'];
+
 
         if (categories is List) {
           for (final category in categories) {
@@ -161,6 +223,7 @@ class _NgoNearbyDonationsScreenState
           }
         }
 
+
         if (_receivingLocation != null) {
           _donationsStream = _firestore
               .collection('donations')
@@ -168,11 +231,13 @@ class _NgoNearbyDonationsScreenState
               .snapshots();
         }
 
+
         _now = DateTime.now();
       });
     } catch (exception, stackTrace) {
       debugPrint('Nearby donation setup failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
+
 
       if (_loadStillCurrent(version, uid)) {
         setState(() {
@@ -191,14 +256,17 @@ class _NgoNearbyDonationsScreenState
     }
   }
 
+
   Future<void> _openReceivingSettings() async {
     if (_isOpeningScreen) {
       return;
     }
 
+
     setState(() {
       _isOpeningScreen = true;
     });
+
 
     try {
       await Navigator.of(context).push<void>(
@@ -206,6 +274,7 @@ class _NgoNearbyDonationsScreenState
           builder: (_) => const NgoReceivingSettingsScreen(),
         ),
       );
+
 
       if (mounted) {
         await _loadProfile();
@@ -219,6 +288,7 @@ class _NgoNearbyDonationsScreenState
     }
   }
 
+
   Future<void> _openDonation(String donationId) async {
     if (_isOpeningScreen ||
         _uid == null ||
@@ -226,9 +296,11 @@ class _NgoNearbyDonationsScreenState
       return;
     }
 
+
     setState(() {
       _isOpeningScreen = true;
     });
+
 
     try {
       await Navigator.of(context).push<void>(
@@ -248,6 +320,7 @@ class _NgoNearbyDonationsScreenState
     }
   }
 
+
   Future<void> _openRoutePreview(_NearbyDonation item) async {
     if (_isOpeningScreen ||
         _uid == null ||
@@ -255,22 +328,28 @@ class _NgoNearbyDonationsScreenState
       return;
     }
 
+
     final receiving = _receivingLocation;
+
 
     if (receiving == null) {
       return;
     }
 
+
     final data = item.document.data();
     final Object? pickup = data['pickupLocation'];
+
 
     if (pickup is! GeoPoint) {
       return;
     }
 
+
     setState(() {
       _isOpeningScreen = true;
     });
+
 
     try {
       await Navigator.of(context).push<void>(
@@ -301,41 +380,52 @@ class _NgoNearbyDonationsScreenState
     }
   }
 
+
   List<_NearbyDonation> _findNearby(
     List<QueryDocumentSnapshot<Map<String, dynamic>>> documents,
   ) {
     final receiving = _receivingLocation;
 
+
     if (receiving == null) {
       return <_NearbyDonation>[];
     }
 
+
     final result = <_NearbyDonation>[];
+
 
     for (final document in documents) {
       final data = document.data();
+
 
       if (data['status'] != 'available' ||
           data['donorId'] == _uid) {
         continue;
       }
 
+
       if (data['eligibilityStatus'] != 'eligible' &&
           data['eligibilityStatus'] != 'urgent') {
         continue;
       }
 
+
       final deadline = _date(data['pickupDeadline']);
+
 
       if (deadline == null || !deadline.isAfter(_now)) {
         continue;
       }
 
+
       final Object? pickup = data['pickupLocation'];
+
 
       if (pickup is! GeoPoint) {
         continue;
       }
+
 
       final distanceMetres = Geolocator.distanceBetween(
         receiving.latitude,
@@ -344,10 +434,12 @@ class _NgoNearbyDonationsScreenState
         pickup.longitude,
       );
 
+
       if (!distanceMetres.isFinite ||
           distanceMetres > _radiusMetres) {
         continue;
       }
+
 
       result.add(
         _NearbyDonation(
@@ -357,17 +449,192 @@ class _NgoNearbyDonationsScreenState
       );
     }
 
+
     result.sort((first, second) {
       final comparison =
           first.distanceMetres.compareTo(second.distanceMetres);
+
 
       return comparison != 0
           ? comparison
           : first.document.id.compareTo(second.document.id);
     });
 
+
     return result;
   }
+
+
+  void _startMatchEvaluations(
+    List<_NearbyDonation> nearby,
+  ) {
+    final receiving = _receivingLocation;
+
+
+    if (receiving == null) {
+      return;
+    }
+
+
+    final int version = _loadVersion;
+
+
+    final List<_NearbyDonation> donationsToEvaluate =
+        nearby.take(_maximumRouteCalculations).toList();
+
+
+    for (final item in donationsToEvaluate) {
+      final String donationId = item.document.id;
+
+
+      if (_matchResults.containsKey(donationId) ||
+          _calculatingMatches.contains(donationId)) {
+        continue;
+      }
+
+
+      _calculatingMatches.add(donationId);
+
+
+      Future<void>(() async {
+        final data = item.document.data();
+
+
+        final Object? pickup = data['pickupLocation'];
+        final DateTime? deadline = _date(data['pickupDeadline']);
+
+
+        if (pickup is! GeoPoint || deadline == null) {
+          if (mounted && version == _loadVersion) {
+            setState(() {
+              _calculatingMatches.remove(donationId);
+              _matchResults[donationId] = null;
+            });
+          }
+
+
+          return;
+        }
+
+
+        try {
+          final FoodBridgeRoute route =
+              await _routeService.getDrivingRoute(
+            pickup: pickup,
+            destination: receiving,
+            startingPoint: receiving,
+          );
+
+
+          final NgoNeedModel ngoNeed = NgoNeedModel(
+            requiredQuantity: _requiredQuantity,
+            preferredFoodCategories: _preferredCategories,
+          );
+
+
+          final MatchPriorityResult result =
+              MatchingService.evaluate(
+            foodCategory: _text(
+              data['foodCategory'],
+              '',
+            ),
+            quantity:
+                data['quantity'] is num ? data['quantity'] : 0,
+            pickupDeadline: deadline,
+            now: DateTime.now(),
+            ngoNeed: ngoNeed,
+            route: route,
+          );
+
+
+          if (mounted && version == _loadVersion) {
+            setState(() {
+              _matchResults[donationId] = result;
+            });
+          }
+        } catch (exception, stackTrace) {
+          debugPrint(
+            'Match Priority route calculation failed for '
+            '$donationId: $exception',
+          );
+          debugPrintStack(stackTrace: stackTrace);
+
+
+          if (mounted && version == _loadVersion) {
+            setState(() {
+              _matchResults[donationId] = null;
+            });
+          }
+        } finally {
+          if (mounted && version == _loadVersion) {
+            setState(() {
+              _calculatingMatches.remove(donationId);
+            });
+          }
+        }
+      });
+    }
+  }
+
+
+  List<_NearbyDonation> _rankNearby(
+    List<_NearbyDonation> nearby,
+  ) {
+    final ranked = List<_NearbyDonation>.from(nearby);
+
+
+    ranked.sort((first, second) {
+      final MatchPriorityResult? firstResult =
+          _matchResults[first.document.id];
+
+
+      final MatchPriorityResult? secondResult =
+          _matchResults[second.document.id];
+
+
+      final bool firstEvaluated = firstResult != null;
+      final bool secondEvaluated = secondResult != null;
+
+
+      final bool firstFeasible =
+          firstEvaluated && firstResult.isFeasible;
+
+
+      final bool secondFeasible =
+          secondEvaluated && secondResult.isFeasible;
+
+
+      if (firstFeasible != secondFeasible) {
+        return firstFeasible ? -1 : 1;
+      }
+
+
+      if (firstFeasible && secondFeasible) {
+        final int comparison = secondResult.totalScore
+            .compareTo(firstResult.totalScore);
+
+
+        if (comparison != 0) {
+          return comparison;
+        }
+      }
+
+
+      final int distanceComparison =
+          first.distanceMetres.compareTo(
+        second.distanceMetres,
+      );
+
+
+      return distanceComparison != 0
+          ? distanceComparison
+          : first.document.id.compareTo(second.document.id);
+    });
+
+
+    return ranked;
+  }
+
 
   String _quantity(dynamic value) {
     return value is num && value.isFinite && value > 0
@@ -375,24 +642,30 @@ class _NgoNearbyDonationsScreenState
         : 'Quantity not recorded';
   }
 
+
   String _remaining(DateTime? deadline) {
     if (deadline == null) {
       return 'Deadline not recorded';
     }
 
+
     final remaining = deadline.difference(_now);
+
 
     if (remaining <= Duration.zero) {
       return 'Pickup window closed';
     }
 
+
     if (remaining.inMinutes == 0) {
       return 'Less than one minute remaining';
     }
 
+
     return '${remaining.inHours}h '
         '${remaining.inMinutes.remainder(60)}m remaining';
   }
+
 
   Widget _header(int count) {
     return Card(
@@ -415,9 +688,10 @@ class _NgoNearbyDonationsScreenState
             ),
             const SizedBox(height: 8),
             const Text(
-              'Sorted by geographical distance. You can preview the '
-              'road route and estimated driving time for an individual '
-              'donation. Match Priority is not calculated yet.',
+              'Match Priority ranks feasible NGO round trips using '
+              'urgency, NGO need, route feasibility, and estimated '
+              'driving time. It does not automatically claim '
+              'donations or assign volunteers.',
               style: TextStyle(fontSize: 12),
             ),
             const SizedBox(height: 12),
@@ -433,18 +707,115 @@ class _NgoNearbyDonationsScreenState
     );
   }
 
+
+  Widget _matchPriorityCard(
+    _NearbyDonation item,
+    MatchPriorityResult? result,
+  ) {
+    final String donationId = item.document.id;
+
+
+    if (_calculatingMatches.contains(donationId)) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: Row(
+          children: [
+            const SizedBox(
+              width: 16,
+              height: 16,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: const Text(
+                'Calculating road-route Match Priority...',
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
+
+    if (result == null) {
+      return Padding(
+        padding: const EdgeInsets.only(top: 12),
+        child: Text(
+          'Road-route Match Priority could not be calculated. '
+          'Use road-route preview to review this donation.',
+          style: TextStyle(
+            color: Colors.orange.shade900,
+          ),
+        ),
+      );
+    }
+
+
+    return Container(
+      width: double.infinity,
+      margin: const EdgeInsets.only(top: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: result.isFeasible
+            ? Colors.green.shade50
+            : Colors.red.shade50,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            result.isFeasible
+                ? 'Match Priority: ${result.totalScore}'
+                : 'Not feasible for NGO round trip',
+            style: TextStyle(
+              color: result.isFeasible
+                  ? Colors.green.shade800
+                  : Colors.red.shade800,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Urgency: ${result.urgencyScore} • '
+            'NGO need: ${result.ngoNeedScore} • '
+            'Feasibility: ${result.pickupFeasibilityScore} • '
+            'Travel-time deduction: '
+            '${result.travelTimeDeduction}',
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'NGO round trip: '
+            '${result.routeDistanceKilometres.toStringAsFixed(2)} km • '
+            '${result.estimatedMinutes} min estimated driving time',
+          ),
+          const SizedBox(height: 6),
+          Text(result.explanation),
+        ],
+      ),
+    );
+  }
+
+
   Widget _donationCard(_NearbyDonation item) {
     final document = item.document;
     final data = document.data();
+
 
     final category = _text(
       data['foodCategory'],
       'Food donation',
     );
 
+
     final urgent = data['eligibilityStatus'] == 'urgent';
     final preferred = _preferredCategories.contains(category);
     final deadline = _date(data['pickupDeadline']);
+
+
+    final MatchPriorityResult? result =
+        _matchResults[document.id];
+
 
     return Card(
       key: ValueKey('nearby-${document.id}'),
@@ -487,6 +858,7 @@ class _NgoNearbyDonationsScreenState
             ),
             const SizedBox(height: 8),
             Text(_remaining(deadline)),
+            _matchPriorityCard(item, result),
             const SizedBox(height: 16),
             OutlinedButton.icon(
               onPressed: _isOpeningScreen
@@ -508,6 +880,7 @@ class _NgoNearbyDonationsScreenState
       ),
     );
   }
+
 
   Widget _messagePanel({
     required String message,
@@ -531,6 +904,7 @@ class _NgoNearbyDonationsScreenState
       ),
     );
   }
+
 
   @override
   Widget build(BuildContext context) {
@@ -580,28 +954,41 @@ class _NgoNearbyDonationsScreenState
                             );
                           }
 
+
                           if (!snapshot.hasData) {
                             return const Center(
                               child: CircularProgressIndicator(),
                             );
                           }
 
+
                           final nearby = _findNearby(
                             snapshot.data!.docs,
                           );
 
+
+                          Future<void>.microtask(() {
+                            _startMatchEvaluations(nearby);
+                          });
+
+
+                          final ranked = _rankNearby(nearby);
+
+
                           final contentCount =
-                              nearby.isEmpty ? 1 : nearby.length;
+                              ranked.isEmpty ? 1 : ranked.length;
+
 
                           return ListView.builder(
                             padding: const EdgeInsets.all(16),
                             itemCount: contentCount + 1,
                             itemBuilder: (context, index) {
                               if (index == 0) {
-                                return _header(nearby.length);
+                                return _header(ranked.length);
                               }
 
-                              if (nearby.isEmpty) {
+
+                              if (ranked.isEmpty) {
                                 return const Padding(
                                   padding: EdgeInsets.all(24),
                                   child: Text(
@@ -613,8 +1000,9 @@ class _NgoNearbyDonationsScreenState
                                 );
                               }
 
+
                               return _donationCard(
-                                nearby[index - 1],
+                                ranked[index - 1],
                               );
                             },
                           );
@@ -625,12 +1013,14 @@ class _NgoNearbyDonationsScreenState
   }
 }
 
+
 class _NearbyDonation {
   final QueryDocumentSnapshot<Map<String, dynamic>> document;
   final double distanceMetres;
+
 
   const _NearbyDonation({
     required this.document,
     required this.distanceMetres,
   });
-}
+} 
