@@ -1,12 +1,561 @@
 const {onCall, HttpsError} = require("firebase-functions/v2/https");
+const {
+  onDocumentCreated,
+  onDocumentUpdated,
+} = require("firebase-functions/v2/firestore");
 const {getApps, initializeApp} = require("firebase-admin/app");
 const {getFirestore, FieldValue, Timestamp} =
   require("firebase-admin/firestore");
+const {getMessaging} = require("firebase-admin/messaging");
 const {getStorage} = require("firebase-admin/storage");
 
 if (getApps().length === 0) {
   initializeApp();
 }
+
+const db = getFirestore();
+
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isEligibleForPickup(donation) {
+  return (
+    donation.eligibilityStatus === "eligible" ||
+    donation.eligibilityStatus === "urgent"
+  );
+}
+
+function formatDateTime(timestamp) {
+  if (!(timestamp instanceof Timestamp)) {
+    return "the planned time";
+  }
+
+  return timestamp.toDate().toLocaleString("en-IN", {
+    day: "2-digit",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+async function sendToUser(userId, payload) {
+  if (!isNonEmptyString(userId)) {
+    return;
+  }
+
+  const tokensSnapshot = await db
+    .collection("fcmTokens")
+    .where("userId", "==", userId)
+    .get();
+
+  if (tokensSnapshot.empty) {
+    console.log(`No FCM tokens found for user ${userId}.`);
+    return;
+  }
+
+  const sendPromises = tokensSnapshot.docs.map(async (tokenDocument) => {
+    const token = tokenDocument.data().token;
+
+    if (!isNonEmptyString(token)) {
+      return;
+    }
+
+    try {
+      await getMessaging().send({
+        token,
+        notification: {
+          title: payload.title,
+          body: payload.body,
+        },
+        data: {
+          type: payload.type,
+          donationId: payload.donationId,
+        },
+        android: {
+          priority: "high",
+        },
+      });
+
+      console.log(
+        `Notification sent to user ${userId} `
+        + `using token ${tokenDocument.id}.`,
+      );
+    } catch (error) {
+      if (
+        error.errorInfo &&
+        (
+          error.errorInfo.code ===
+            "messaging/registration-token-not-registered" ||
+          error.errorInfo.code ===
+            "messaging/invalid-registration-token"
+        )
+      ) {
+        await tokenDocument.ref.delete();
+
+        console.log(
+          `Removed invalid FCM token ${tokenDocument.id} `
+          + `for user ${userId}.`,
+        );
+
+        return;
+      }
+
+      console.error(
+        `Failed to send notification to user ${userId}:`,
+        error,
+      );
+    }
+  });
+
+  await Promise.allSettled(sendPromises);
+}
+
+async function sendToUsers(userIds, payload) {
+  const uniqueUserIds = Array.from(
+    new Set(
+      userIds.filter(isNonEmptyString),
+    ),
+  );
+
+  await Promise.allSettled(
+    uniqueUserIds.map((userId) => sendToUser(userId, payload)),
+  );
+}
+
+async function getActiveUserIdsByRole(role) {
+  const snapshot = await db
+    .collection("users")
+    .where("role", "==", role)
+    .where("isActive", "==", true)
+    .get();
+
+  return snapshot.docs
+    .map((document) => document.id)
+    .filter(isNonEmptyString);
+}
+
+async function getInterestedNgoIds(donation, donorId) {
+  const foodCategory = donation.foodCategory;
+
+  if (!isNonEmptyString(foodCategory)) {
+    return [];
+  }
+
+  const ngoIds = await getActiveUserIdsByRole("ngo");
+
+  if (ngoIds.length === 0) {
+    return [];
+  }
+
+  const profileSnapshots = await Promise.all(
+    ngoIds.map((ngoId) => db.collection("users").doc(ngoId).get()),
+  );
+
+  return profileSnapshots
+    .filter((snapshot) => snapshot.exists)
+    .filter((snapshot) => {
+      const profile = snapshot.data();
+
+      if (!profile || profile.id === donorId) {
+        return false;
+      }
+
+      const receivingProfile = profile.ngoReceivingProfile;
+
+      if (!receivingProfile || typeof receivingProfile !== "object") {
+        return false;
+      }
+
+      const preferredCategories =
+        receivingProfile.preferredFoodCategories;
+
+      return (
+        Array.isArray(preferredCategories) &&
+        preferredCategories.includes(foodCategory)
+      );
+    })
+    .map((snapshot) => snapshot.id);
+}
+
+/*
+ * DONATION POSTED
+ *
+ * Notifies active NGOs whose preferred food categories include the
+ * donation category. The donor is excluded.
+ */
+exports.onDonationCreated = onDocumentCreated(
+  "donations/{donationId}",
+  async (event) => {
+    const snapshot = event.data;
+
+    if (!snapshot) {
+      return;
+    }
+
+    const donation = snapshot.data();
+    const donationId = event.params.donationId;
+
+    const isAvailable =
+      donation.status === "available" &&
+      isEligibleForPickup(donation);
+
+    if (!isAvailable) {
+      return;
+    }
+
+    const donorId = isNonEmptyString(donation.donorId)
+      ? donation.donorId
+      : "";
+
+    const ngoIds = await getInterestedNgoIds(donation, donorId);
+
+    await sendToUsers(ngoIds, {
+      title: "New food donation available",
+      body: `A ${donation.foodCategory || "food"} donation is available. `
+        + "Open it to review the details and claim it.",
+      type: "donation_posted",
+      donationId,
+    });
+  },
+);
+
+/*
+ * NGO CLAIMED DONATION
+ *
+ * Notifies the donor that an NGO has claimed the donation.
+ */
+exports.onDonationClaimed = onDocumentUpdated(
+  "donations/{donationId}",
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const donationId = event.params.donationId;
+
+    const claimedNow =
+      before.status !== "claimed" &&
+      after.status === "claimed";
+
+    if (!claimedNow) {
+      return;
+    }
+
+    const donorId = isNonEmptyString(after.donorId)
+      ? after.donorId
+      : "";
+
+    const ngoId = isNonEmptyString(after.claimedByNgoId)
+      ? after.claimedByNgoId
+      : "";
+
+    await sendToUser(donorId, {
+      title: "Your donation was claimed",
+      body: "An NGO claimed your donation. "
+        + "Review the pickup plan and confirm your availability.",
+      type: "donation_claimed",
+      donationId,
+    });
+
+    await sendToUser(ngoId, {
+      title: "Donation claimed",
+      body: "Confirm receiving capacity and the pickup plan "
+        + "for this donation.",
+      type: "donation_claimed",
+      donationId,
+    });
+  },
+);
+
+/*
+ * NGO CONFIRMED PICKUP PLAN
+ *
+ * Notifies the donor to confirm the pickup arrangement.
+ */
+exports.onNgoPickupConfirmed = onDocumentUpdated(
+  "donations/{donationId}",
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const donationId = event.params.donationId;
+
+    const confirmedNow =
+      before.ngoPickupConfirmed !== true &&
+      after.ngoPickupConfirmed === true;
+
+    if (!confirmedNow) {
+      return;
+    }
+
+    const donorId = isNonEmptyString(after.donorId)
+      ? after.donorId
+      : "";
+
+    await sendToUser(donorId, {
+      title: "Confirm pickup arrangement",
+      body: `The NGO proposed pickup at `
+        + `${formatDateTime(after.plannedPickupAt)}. `
+        + "Please confirm your pickup availability.",
+      type: "ngo_pickup_confirmed",
+      donationId,
+    });
+  },
+);
+
+/*
+ * DONOR CONFIRMED PICKUP
+ *
+ * Notifies active volunteers that a fully confirmed pickup
+ * opportunity is available.
+ */
+exports.onDonorPickupConfirmed = onDocumentUpdated(
+  "donations/{donationId}",
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const donationId = event.params.donationId;
+
+    const confirmedNow =
+      before.donorPickupConfirmed !== true &&
+      after.donorPickupConfirmed === true;
+
+    const opportunityReady =
+      after.status === "claimed" &&
+      after.ngoPickupConfirmed === true &&
+      after.donorPickupConfirmed === true &&
+      isEligibleForPickup(after);
+
+    if (!confirmedNow || !opportunityReady) {
+      return;
+    }
+
+    const volunteerIds = await getActiveUserIdsByRole("volunteer");
+
+    await sendToUsers(volunteerIds, {
+      title: "New pickup opportunity",
+      body: `A ${after.foodCategory || "food"} donation needs a volunteer. `
+        + "Open Available pickups to review and accept it.",
+      type: "pickup_opportunity_available",
+      donationId,
+    });
+  },
+);
+
+/*
+ * VOLUNTEER ACCEPTED PICKUP
+ *
+ * Notifies the donor and claiming NGO.
+ */
+exports.onVolunteerAssigned = onDocumentUpdated(
+  "donations/{donationId}",
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const donationId = event.params.donationId;
+
+    const assignedNow =
+      before.status !== "volunteer_assigned" &&
+      after.status === "volunteer_assigned";
+
+    if (!assignedNow) {
+      return;
+    }
+
+    const donorId = isNonEmptyString(after.donorId)
+      ? after.donorId
+      : "";
+
+    const ngoId = isNonEmptyString(after.claimedByNgoId)
+      ? after.claimedByNgoId
+      : "";
+
+    await sendToUsers([donorId, ngoId], {
+      title: "Volunteer assigned",
+      body: "A volunteer accepted this pickup task. "
+        + "Open the donation for the latest status.",
+      type: "volunteer_assigned",
+      donationId,
+    });
+  },
+);
+
+/*
+ * VOLUNTEER PICKED UP DONATION
+ *
+ * Notifies the donor and claiming NGO.
+ */
+exports.onDonationPickedUp = onDocumentUpdated(
+  "donations/{donationId}",
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const donationId = event.params.donationId;
+
+    const pickedUpNow =
+      before.status !== "picked_up" &&
+      after.status === "picked_up";
+
+    if (!pickedUpNow) {
+      return;
+    }
+
+    const donorId = isNonEmptyString(after.donorId)
+      ? after.donorId
+      : "";
+
+    const ngoId = isNonEmptyString(after.claimedByNgoId)
+      ? after.claimedByNgoId
+      : "";
+
+    await sendToUsers([donorId, ngoId], {
+      title: "Donation picked up",
+      body: "The volunteer collected the donation. "
+        + "It is now awaiting delivery.",
+      type: "donation_picked_up",
+      donationId,
+    });
+  },
+);
+
+/*
+ * VOLUNTEER DELIVERED DONATION
+ *
+ * Notifies the claiming NGO for delivery review.
+ */
+exports.onDonationDelivered = onDocumentUpdated(
+  "donations/{donationId}",
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const donationId = event.params.donationId;
+
+    const deliveredNow =
+      before.status !== "delivered" &&
+      after.status === "delivered";
+
+    if (!deliveredNow) {
+      return;
+    }
+
+    const ngoId = isNonEmptyString(after.claimedByNgoId)
+      ? after.claimedByNgoId
+      : "";
+
+    await sendToUser(ngoId, {
+      title: "Donation delivered",
+      body: "A volunteer delivered this donation. "
+        + "Open the delivery inbox to accept or reject it.",
+      type: "donation_delivered",
+      donationId,
+    });
+  },
+);
+
+/*
+ * NGO ACCEPTED OR REJECTED DELIVERY
+ *
+ * Notifies the donor and assigned volunteer.
+ */
+exports.onDonationReviewed = onDocumentUpdated(
+  "donations/{donationId}",
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const donationId = event.params.donationId;
+
+    const acceptedNow =
+      before.status !== "accepted" &&
+      after.status === "accepted";
+
+    const rejectedNow =
+      before.status !== "rejected" &&
+      after.status === "rejected";
+
+    if (!acceptedNow && !rejectedNow) {
+      return;
+    }
+
+    const donorId = isNonEmptyString(after.donorId)
+      ? after.donorId
+      : "";
+
+    const volunteerId = isNonEmptyString(after.assignedVolunteerId)
+      ? after.assignedVolunteerId
+      : "";
+
+    await sendToUsers([donorId, volunteerId], {
+      title: acceptedNow
+        ? "Donation accepted"
+        : "Donation rejected",
+      body: acceptedNow
+        ? "The receiving NGO accepted the delivered donation."
+        : "The receiving NGO rejected the delivered donation. "
+          + "Open the donation for details.",
+      type: acceptedNow
+        ? "donation_accepted"
+        : "donation_rejected",
+      donationId,
+    });
+  },
+);
+
+/*
+ * DONATION CANCELLED OR EXPIRED
+ *
+ * Notifies the donor, claiming NGO, and assigned volunteer when relevant.
+ */
+exports.onDonationCancelledOrExpired = onDocumentUpdated(
+  "donations/{donationId}",
+  async (event) => {
+    const before = event.data.before.data();
+    const after = event.data.after.data();
+
+    const donationId = event.params.donationId;
+
+    const cancelledNow =
+      before.status !== "cancelled" &&
+      after.status === "cancelled";
+
+    const expiredNow =
+      before.status !== "expired" &&
+      after.status === "expired";
+
+    if (!cancelledNow && !expiredNow) {
+      return;
+    }
+
+    const donorId = isNonEmptyString(after.donorId)
+      ? after.donorId
+      : "";
+
+    const ngoId = isNonEmptyString(after.claimedByNgoId)
+      ? after.claimedByNgoId
+      : "";
+
+    const volunteerId = isNonEmptyString(after.assignedVolunteerId)
+      ? after.assignedVolunteerId
+      : "";
+
+    await sendToUsers([donorId, ngoId, volunteerId], {
+      title: cancelledNow
+        ? "Donation cancelled"
+        : "Donation expired",
+      body: cancelledNow
+        ? "This donation was cancelled. No further action is required."
+        : "This donation expired before completion.",
+      type: cancelledNow
+        ? "donation_cancelled"
+        : "donation_expired",
+      donationId,
+    });
+  },
+);
 
 exports.completeDonationPickup = onCall(
   {
@@ -77,7 +626,6 @@ exports.completeDonationPickup = onCall(
       );
     }
 
-    const db = getFirestore();
     const donationRef = db.collection("donations").doc(donationId);
     const profileRef = db.collection("users").doc(uid);
 
