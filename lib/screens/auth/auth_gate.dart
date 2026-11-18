@@ -1,10 +1,9 @@
-import 'dart:async';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/fcm_token_service.dart';
+import '../../services/workflow_notification_service.dart';
 import '../donor/donor_dashboard_screen.dart';
 import '../ngo/ngo_dashboard_screen.dart';
 import '../volunteer/volunteer_dashboard_screen.dart';
@@ -20,7 +19,7 @@ class AuthGate extends StatefulWidget {
 class _AuthGateState extends State<AuthGate> {
   late final Stream<User?> _authStream;
 
-  final Set<String> _fcmRegisteredUids = <String>{};
+  final Set<String> _notificationInitializedUids = <String>{};
 
   @override
   void initState() {
@@ -29,15 +28,23 @@ class _AuthGateState extends State<AuthGate> {
     _authStream = FirebaseAuth.instance.authStateChanges();
   }
 
-  Future<void> _registerNotifications(String uid) async {
-    if (_fcmRegisteredUids.contains(uid)) {
+  Future<void> _initializeNotifications(
+    String uid,
+    String role,
+  ) async {
+    if (_notificationInitializedUids.contains(uid)) {
       return;
     }
 
-    _fcmRegisteredUids.add(uid);
+    _notificationInitializedUids.add(uid);
 
     await FcmTokenService.instance
         .requestPermissionAndRegisterToken();
+
+    await WorkflowNotificationService.instance.start(
+      uid: uid,
+      role: role,
+    );
   }
 
   @override
@@ -69,7 +76,7 @@ class _AuthGateState extends State<AuthGate> {
         return UserProfileLoader(
           key: ValueKey<String>(user.uid),
           user: user,
-          onDashboardReady: _registerNotifications,
+          onNotificationsReady: _initializeNotifications,
         );
       },
     );
@@ -78,12 +85,13 @@ class _AuthGateState extends State<AuthGate> {
 
 class UserProfileLoader extends StatefulWidget {
   final User user;
-  final Future<void> Function(String uid) onDashboardReady;
+  final Future<void> Function(String uid, String role)
+      onNotificationsReady;
 
   const UserProfileLoader({
     super.key,
     required this.user,
-    required this.onDashboardReady,
+    required this.onNotificationsReady,
   });
 
   @override
@@ -93,19 +101,13 @@ class UserProfileLoader extends StatefulWidget {
 
 class _UserProfileLoaderState
     extends State<UserProfileLoader> {
-  Stream<DocumentSnapshot<Map<String, dynamic>>>? _profileStream;
-
-  StreamSubscription<User?>? _authSubscription;
+  Future<DocumentSnapshot<Map<String, dynamic>>>? _profileFuture;
 
   @override
   void initState() {
     super.initState();
 
-    _connectProfile();
-
-    _authSubscription = FirebaseAuth.instance
-        .authStateChanges()
-        .listen(_handleAuthChange);
+    _loadProfile();
   }
 
   @override
@@ -113,50 +115,24 @@ class _UserProfileLoaderState
     super.didUpdateWidget(oldWidget);
 
     if (oldWidget.user.uid != widget.user.uid) {
-      _connectProfile();
+      _loadProfile();
     }
   }
 
-  @override
-  void dispose() {
-    _authSubscription?.cancel();
-    super.dispose();
-  }
-
-  void _handleAuthChange(User? user) {
-    if (!mounted) {
-      return;
-    }
-
-    if (user == null || user.uid != widget.user.uid) {
-      setState(() {
-        _profileStream = null;
-      });
-
-      return;
-    }
-  }
-
-  void _connectProfile() {
-    if (FirebaseAuth.instance.currentUser?.uid != widget.user.uid) {
-      _profileStream = null;
-
-      return;
-    }
-
+  void _loadProfile() {
     debugPrint(
-      'AuthGate: listening to users/${widget.user.uid}',
+      'AuthGate: loading users/${widget.user.uid}',
     );
 
-    _profileStream = FirebaseFirestore.instance
+    _profileFuture = FirebaseFirestore.instance
         .collection('users')
         .doc(widget.user.uid)
-        .snapshots();
+        .get();
   }
 
   void _retry() {
     setState(() {
-      _connectProfile();
+      _loadProfile();
     });
   }
 
@@ -219,23 +195,17 @@ class _UserProfileLoaderState
       return const LoginScreen();
     }
 
-    final Stream<DocumentSnapshot<Map<String, dynamic>>>? profileStream =
-        _profileStream;
+    final Future<DocumentSnapshot<Map<String, dynamic>>>? profileFuture =
+        _profileFuture;
 
-    if (profileStream == null) {
+    if (profileFuture == null) {
       return const LoginScreen();
     }
 
-    return StreamBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-      stream: profileStream,
+    return FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
+      future: profileFuture,
       builder: (context, snapshot) {
         if (snapshot.hasError) {
-          final User? activeUser = FirebaseAuth.instance.currentUser;
-
-          if (activeUser == null || activeUser.uid != widget.user.uid) {
-            return const LoginScreen();
-          }
-
           return _DiagnosticScreen(
             title: 'Unable to load profile',
             details:
@@ -261,7 +231,7 @@ class _UserProfileLoaderState
                 'Your login account exists, but its FoodBridge '
                 'profile is not available.\n\n'
                 'If registration is still saving the profile, '
-                'this screen will update automatically.\n\n'
+                'restart the app after registration completes.\n\n'
                 'If registration already failed, complete profile '
                 'recovery for this existing account instead of '
                 'creating the same account again.\n\n'
@@ -313,7 +283,10 @@ class _UserProfileLoaderState
             return;
           }
 
-          widget.onDashboardReady(widget.user.uid);
+          widget.onNotificationsReady(
+            widget.user.uid,
+            role,
+          );
         });
 
         return _buildDashboard(role);

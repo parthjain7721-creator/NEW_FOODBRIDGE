@@ -7,6 +7,7 @@ import 'package:crypto/crypto.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
+import 'workflow_notification_service.dart';
 
 class FcmTokenService {
   FcmTokenService._();
@@ -145,23 +146,26 @@ class FcmTokenService {
     }
   }
 
+  
   Future<void> signOutAndCleanup() async {
-    final String? uid = _auth.currentUser?.uid;
+  final String? uid = _auth.currentUser?.uid;
 
-    debugPrint(
-      'FcmTokenService: signing out and cleaning up tokens. uid=$uid',
-    );
+  debugPrint(
+    'FcmTokenService: signing out and cleaning up tokens. uid=$uid',
+  );
 
-    if (uid != null && uid.isNotEmpty) {
-      await _deleteTokensForUser(uid);
-    }
+  WorkflowNotificationService.instance.stop();
 
-    await _auth.signOut();
+  if (uid != null && uid.isNotEmpty) {
+    await _deleteTokensForUser(uid);
+  }
+
+  await _auth.signOut();
 
     debugPrint(
       'FcmTokenService: user signed out.',
     );
-  }
+  } 
 
   Future<void> _saveToken(String token) async {
     final String? uid = _auth.currentUser?.uid;
