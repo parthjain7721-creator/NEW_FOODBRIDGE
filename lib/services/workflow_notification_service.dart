@@ -4,7 +4,9 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
+import '../models/app_notification.dart';
 import '../screens/ngo/donation_details_screen.dart';
+import 'local_notification_store.dart';
 import 'notification_service.dart';
 
 class WorkflowNotificationService {
@@ -272,7 +274,7 @@ class WorkflowNotificationService {
       );
 
       if (payload != null) {
-        _showInAppNotification(payload);
+        unawaited(_showInAppNotification(payload));
       }
     }
   }
@@ -331,12 +333,14 @@ class WorkflowNotificationService {
         continue;
       }
 
-      _showInAppNotification(
-        NotificationPayload(
-          title: 'New food donation available',
-          body: 'A $foodCategory donation is available. '
-              'Open it to review the details and claim it.',
-          donationId: donationId,
+      unawaited(
+        _showInAppNotification(
+          NotificationPayload(
+            title: 'New food donation available',
+            body: 'A $foodCategory donation is available. '
+                'Open it to review the details and claim it.',
+            donationId: donationId,
+          ),
         ),
       );
     }
@@ -377,13 +381,15 @@ class WorkflowNotificationService {
 
       _knownOpportunityDonationIds.add(donationId);
 
-      _showInAppNotification(
-        NotificationPayload(
-          title: 'New pickup opportunity',
-          body: 'A ${donation['foodCategory'] ?? 'food'} donation '
-              'needs a volunteer. Open Available pickups to '
-              'review and accept it.',
-          donationId: donationId,
+      unawaited(
+        _showInAppNotification(
+          NotificationPayload(
+            title: 'New pickup opportunity',
+            body: 'A ${donation['foodCategory'] ?? 'food'} donation '
+                'needs a volunteer. Open Available pickups to '
+                'review and accept it.',
+            donationId: donationId,
+          ),
         ),
       );
     }
@@ -550,11 +556,45 @@ class WorkflowNotificationService {
     ].join('|');
   }
 
-  void _showInAppNotification(NotificationPayload payload) {
+  Future<void> _showInAppNotification(
+    NotificationPayload payload,
+  ) async {
+    final String? uid = _activeUid;
+
+    if (uid == null || uid.isEmpty) {
+      return;
+    }
+
     final BuildContext? context =
         NotificationService.navigatorKey.currentContext;
 
-    if (context == null) {
+    final String notificationId = _generateNotificationId(
+      donationId: payload.donationId,
+    );
+
+    final AppNotification notification = AppNotification(
+      id: notificationId,
+      title: payload.title,
+      body: payload.body,
+      donationId: payload.donationId,
+      createdAt: DateTime.now(),
+      isRead: false,
+    );
+
+    try {
+      await LocalNotificationStore.instance.addNotification(
+        uid: uid,
+        notification: notification,
+      );
+    } catch (error, stackTrace) {
+      debugPrint(
+        'Failed to save workflow notification locally: $error',
+      );
+
+      debugPrintStack(stackTrace: stackTrace);
+    }
+
+    if (context == null || !context.mounted) {
       return;
     }
 
@@ -575,6 +615,18 @@ class WorkflowNotificationService {
           ),
         ),
       );
+  }
+
+  String _generateNotificationId({
+    required String donationId,
+  }) {
+    final int timestamp = DateTime.now().microsecondsSinceEpoch;
+
+    final String safeDonationId = donationId.trim().isEmpty
+        ? 'none'
+        : donationId.trim();
+
+    return 'notif_${timestamp}_$safeDonationId';
   }
 
   void _openDonationDetails(String donationId) {
