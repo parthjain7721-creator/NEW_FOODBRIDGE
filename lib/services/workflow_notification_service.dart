@@ -581,18 +581,33 @@ class WorkflowNotificationService {
       isRead: false,
     );
 
-    try {
-      await LocalNotificationStore.instance.addNotification(
-        uid: uid,
-        notification: notification,
-      );
-    } catch (error, stackTrace) {
-      debugPrint(
-        'Failed to save workflow notification locally: $error',
-      );
+  try {
+    await LocalNotificationStore.instance.addNotification(
+      uid: uid,
+      notification: notification,
+    );
 
-      debugPrintStack(stackTrace: stackTrace);
-    }
+    final int unreadCount = await LocalNotificationStore.instance
+        .getUnreadCount(uid);
+
+    final List<AppNotification> savedNotifications =
+        await LocalNotificationStore.instance.getNotifications(uid);
+
+    debugPrint(
+      'Workflow notification saved locally. '
+      'uid=$uid '
+      'total=${savedNotifications.length} '
+      'unread=$unreadCount '
+      'title=${notification.title}',
+    );
+  } 
+  catch (error, stackTrace) {
+    debugPrint(
+      'Failed to save workflow notification locally: $error',
+    );
+
+    debugPrintStack(stackTrace: stackTrace);
+  }
 
     if (context == null || !context.mounted) {
       return;
