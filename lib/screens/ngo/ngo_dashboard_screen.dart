@@ -5,12 +5,15 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/fcm_token_service.dart';
+import '../../widgets/dashboard_action_card.dart';
+import '../../widgets/info_tile.dart';
+import '../../widgets/notification_bell_button.dart';
+import '../../widgets/section_header.dart';
 import 'donation_details_screen.dart';
 import 'ngo_claimed_donations_screen.dart';
 import 'ngo_delivery_inbox_screen.dart';
 import 'ngo_nearby_donations_screen.dart';
 import 'ngo_receiving_settings_screen.dart';
-import '../../widgets/notification_bell_button.dart';
 
 class NgoDashboardScreen extends StatefulWidget {
   const NgoDashboardScreen({super.key});
@@ -100,6 +103,7 @@ class _NgoDashboardScreenState
         'Your session has ended. Please log in again.',
         Colors.red.shade700,
       );
+
       return;
     }
 
@@ -229,6 +233,7 @@ class _NgoDashboardScreenState
         'NGO dashboard claim failed: '
         '${exception.code} - ${exception.message}',
       );
+
       debugPrintStack(stackTrace: stackTrace);
 
       if (_sameAccount(uid)) {
@@ -292,8 +297,6 @@ class _NgoDashboardScreenState
 
     try {
       await FcmTokenService.instance.signOutAndCleanup();
-
-      // AuthGate handles the transition to Login.
     } catch (exception, stackTrace) {
       debugPrint('NGO logout failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
@@ -325,6 +328,7 @@ class _NgoDashboardScreenState
         'Your session has ended. Please log in again.',
         Colors.red.shade700,
       );
+
       return;
     }
 
@@ -578,145 +582,6 @@ class _NgoDashboardScreenState
       );
   }
 
-  Widget _buildNavigationCard({
-    required IconData icon,
-    required String title,
-    required String description,
-    required String buttonLabel,
-    required VoidCallback onPressed,
-  }) {
-    return Card(
-      margin: const EdgeInsets.only(bottom: 16),
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              children: [
-                Icon(
-                  icon,
-                  size: 30,
-                  color: const Color(0xFF356B4D),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    title,
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 12),
-            Text(description),
-            const SizedBox(height: 16),
-            SizedBox(
-              width: double.infinity,
-              child: OutlinedButton.icon(
-                onPressed: _isBusy ? null : onPressed,
-                icon: Icon(icon),
-                label: Text(buttonLabel),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildNavigationSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        _buildNavigationCard(
-          icon: Icons.location_on_outlined,
-          title: 'Receiving location and requirements',
-          description:
-              'Set your NGO receiving address, select its point '
-              'on the map, and record your required quantity '
-              'and preferred food categories.',
-          buttonLabel: 'Manage receiving settings',
-          onPressed: _openReceivingSettings,
-        ),
-        _buildNavigationCard(
-          icon: Icons.near_me_outlined,
-          title: 'Nearby donations',
-          description:
-              'Find eligible donations within 10 km of your '
-              'saved NGO receiving point. Nearby results use '
-              'geographical distance, not road travel time.',
-          buttonLabel: 'Find nearby donations',
-          onPressed: _openNearbyDonations,
-        ),
-        _buildNavigationCard(
-          icon: Icons.inventory_outlined,
-          title: 'My claimed donations',
-          description:
-              'Review the donations your NGO has claimed and '
-              'confirm receiving capacity and pickup arrangements.',
-          buttonLabel: 'View claimed donations',
-          onPressed: _openClaimedDonations,
-        ),
-        _buildNavigationCard(
-          icon: Icons.fact_check_outlined,
-          title: 'Delivery inbox',
-          description:
-              'Find donations awaiting your NGO’s delivery review. '
-              'Open a delivery to accept or reject it, or view '
-              'previously accepted and rejected deliveries.',
-          buttonLabel: 'Open delivery inbox',
-          onPressed: _openDeliveryInbox,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildListingsError() {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(24),
-        child: Column(
-          children: [
-            const Icon(
-              Icons.error_outline,
-              size: 40,
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Unable to load donation listings. '
-              'Check your connection and NGO account access.',
-              textAlign: TextAlign.center,
-            ),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(
-              onPressed: _isBusy ? null : _retryDonations,
-              icon: const Icon(Icons.refresh),
-              label: const Text('Try again'),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildFooter() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(
-        horizontal: 8,
-        vertical: 16,
-      ),
-      child: Text(
-        'FoodBridge records declarations and workflow checks. '
-        'It does not certify food safety.',
-        textAlign: TextAlign.center,
-        style: Theme.of(context).textTheme.bodySmall?.copyWith(
-              color: Colors.grey.shade700,
-            ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -785,7 +650,7 @@ class _NgoDashboardScreenState
           builder: (context, snapshot) {
             final donations =
                 snapshot.data?.docs.toList() ??
-                <QueryDocumentSnapshot<Map<String, dynamic>>>[];
+                    <QueryDocumentSnapshot<Map<String, dynamic>>>[];
 
             donations.sort(_compareDonations);
 
@@ -804,37 +669,41 @@ class _NgoDashboardScreenState
                 showListings ? donations.length : 1;
 
             return ListView.builder(
-              padding: const EdgeInsets.all(16),
+              padding: const EdgeInsets.all(20),
               itemCount: contentCount + 3,
               itemBuilder: (context, index) {
                 if (index == 0) {
-                  return _buildNavigationSection();
+                  return _buildWelcomeHeader();
                 }
 
                 if (index == 1) {
+                  return _buildNavigationSection();
+                }
+
+                if (index == 2) {
                   if (snapshot.hasError || !snapshot.hasData) {
                     return Padding(
                       padding: const EdgeInsets.only(
                         top: 8,
                         bottom: 16,
                       ),
-                      child: Text(
-                        'Food donation listings',
-                        style: Theme.of(context).textTheme.titleLarge,
+                      child: SectionHeader(
+                        title: 'Food donation listings',
+                        icon: Icons.inventory_2_outlined,
                       ),
                     );
                   }
 
                   return Padding(
                     padding: const EdgeInsets.only(bottom: 16),
-                    child: _buildHeader(
+                    child: _buildListingsHeader(
                       listingCount: donations.length,
                       claimableCount: claimableCount,
                     ),
                   );
                 }
 
-                final int contentIndex = index - 2;
+                final int contentIndex = index - 3;
 
                 if (contentIndex == contentCount) {
                   return _buildFooter();
@@ -868,45 +737,223 @@ class _NgoDashboardScreenState
     );
   }
 
-  Widget _buildHeader({
+  Widget _buildWelcomeHeader() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 20),
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF356B4D).withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF356B4D),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Icon(
+              Icons.home_work_outlined,
+              color: Colors.white,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Food rescue dashboard',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w800,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Find available donations, manage receiving '
+                  'requirements, and coordinate pickups.',
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Colors.grey.shade700,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildNavigationSection() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        DashboardActionCard(
+          icon: Icons.location_on_outlined,
+          title: 'Receiving location and requirements',
+          description:
+              'Set your NGO receiving address, select its point on the '
+              'map, and record your required quantity and preferred '
+              'food categories.',
+          buttonLabel: 'Manage receiving settings',
+          onPressed: _isBusy ? null : _openReceivingSettings,
+        ),
+        const SizedBox(height: 16),
+        DashboardActionCard(
+          icon: Icons.near_me_outlined,
+          title: 'Nearby donations',
+          description:
+              'Find eligible donations within 10 km of your saved NGO '
+              'receiving point. Nearby results use geographical '
+              'distance, not road travel time.',
+          buttonLabel: 'Find nearby donations',
+          onPressed: _isBusy ? null : _openNearbyDonations,
+        ),
+        const SizedBox(height: 16),
+        DashboardActionCard(
+          icon: Icons.inventory_outlined,
+          title: 'My claimed donations',
+          description:
+              'Review donations claimed by your NGO and confirm '
+              'receiving capacity and pickup arrangements.',
+          buttonLabel: 'View claimed donations',
+          onPressed: _isBusy ? null : _openClaimedDonations,
+        ),
+        const SizedBox(height: 16),
+        DashboardActionCard(
+          icon: Icons.fact_check_outlined,
+          title: 'Delivery inbox',
+          description:
+              'Find donations awaiting delivery review. Open a delivery '
+              'to accept or reject it, or view previously accepted and '
+              'rejected deliveries.',
+          buttonLabel: 'Open delivery inbox',
+          onPressed: _isBusy ? null : _openDeliveryInbox,
+        ),
+        const SizedBox(height: 28),
+      ],
+    );
+  }
+
+  Widget _buildListingsHeader({
     required int listingCount,
     required int claimableCount,
   }) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(18),
-        child: Row(
-          children: [
-            const CircleAvatar(
-              radius: 26,
-              child: Icon(Icons.home_work_outlined),
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: Colors.grey.shade200,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF356B4D).withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(14),
             ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Food donation listings',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '$listingCount listing(s) • '
-                    '$claimableCount eligible with an open pickup window',
-                  ),
-                  const SizedBox(height: 6),
-                  const Text(
-                    'These are all available listings. '
-                    'Eligible listings are shown first, '
-                    'ordered by pickup deadline. '
-                    'Use Nearby donations for the 10 km view.',
-                  ),
-                ],
+            child: const Icon(
+              Icons.inventory_2_outlined,
+              color: Color(0xFF356B4D),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Available donations',
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '$listingCount listing(s) • '
+                  '$claimableCount eligible with an open pickup window',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                      ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Eligible listings appear first and are ordered by '
+                  'pickup deadline.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildListingsError() {
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          children: [
+            const Icon(
+              Icons.error_outline,
+              size: 40,
+              color: Colors.red,
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Unable to load donation listings. '
+              'Check your connection and NGO account access.',
+              textAlign: TextAlign.center,
+            ),
+            const SizedBox(height: 16),
+            FilledButton.icon(
+              onPressed: _isBusy ? null : _retryDonations,
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF356B4D),
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 20,
+                  vertical: 14,
+                ),
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(14),
+                ),
               ),
+              icon: const Icon(Icons.refresh),
+              label: const Text('Try again'),
             ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildFooter() {
+    return Padding(
+      padding: const EdgeInsets.symmetric(
+        horizontal: 8,
+        vertical: 16,
+      ),
+      child: Text(
+        'FoodBridge records declarations and workflow checks. '
+        'It does not certify food safety.',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Colors.grey.shade700,
+            ),
       ),
     );
   }
@@ -960,40 +1007,53 @@ class _NgoDashboardScreenState
 
     return Card(
       key: ValueKey('listing-${document.id}'),
+      elevation: 1,
       margin: const EdgeInsets.only(bottom: 16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+      ),
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              category,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            _StatusChip(
-              label: _eligibilityLabel(eligibility),
-              color: _eligibilityColor(eligibility),
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    category,
+                    style:
+                        Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                  ),
+                ),
+                _StatusChip(
+                  label: _eligibilityLabel(eligibility),
+                  color: _eligibilityColor(eligibility),
+                ),
+              ],
             ),
             const SizedBox(height: 16),
-            _InfoRow(
+            InfoTile(
               icon: Icons.inventory_2_outlined,
               label: 'Quantity',
               value: _quantityLabel(donation['quantity']),
             ),
-            _InfoRow(
+            InfoTile(
               icon: Icons.kitchen_outlined,
               label: 'Storage',
               value: _storageLabel(
                 _readText(donation['storageMethod'], 'unknown'),
               ),
             ),
-            _InfoRow(
+            InfoTile(
               icon: Icons.schedule_outlined,
               label: 'Pickup deadline',
               value: _formatDateTime(deadline),
             ),
-            _InfoRow(
+            InfoTile(
               icon: Icons.warning_amber_outlined,
               label: 'Allergens',
               value: _readText(
@@ -1001,16 +1061,16 @@ class _NgoDashboardScreenState
                 'Not declared — not necessarily allergen-free',
               ),
             ),
-            const SizedBox(height: 12),
+            const SizedBox(height: 8),
             Container(
               width: double.infinity,
               padding: const EdgeInsets.symmetric(
-                horizontal: 12,
-                vertical: 10,
+                horizontal: 14,
+                vertical: 12,
               ),
               decoration: BoxDecoration(
                 color: countdownColor.withValues(alpha: 0.10),
-                borderRadius: BorderRadius.circular(10),
+                borderRadius: BorderRadius.circular(14),
               ),
               child: Row(
                 children: [
@@ -1018,7 +1078,7 @@ class _NgoDashboardScreenState
                     Icons.timer_outlined,
                     color: countdownColor,
                   ),
-                  const SizedBox(width: 8),
+                  const SizedBox(width: 10),
                   Expanded(
                     child: Text(
                       _formatRemainingTime(deadline),
@@ -1031,13 +1091,26 @@ class _NgoDashboardScreenState
                 ],
               ),
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 18),
             SizedBox(
               width: double.infinity,
               child: OutlinedButton.icon(
                 onPressed: _isBusy
                     ? null
                     : () => _openDonationDetails(document.id),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF356B4D),
+                  side: BorderSide(
+                    color: const Color(0xFF356B4D)
+                        .withValues(alpha: 0.45),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 14,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
                 icon: const Icon(Icons.visibility_outlined),
                 label: const Text('View donation details'),
               ),
@@ -1045,16 +1118,27 @@ class _NgoDashboardScreenState
             const SizedBox(height: 12),
             SizedBox(
               width: double.infinity,
-              child: ElevatedButton.icon(
+              child: FilledButton.icon(
                 onPressed: canClaim && !_isBusy
                     ? () => _claimDonation(document.id)
                     : null,
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF356B4D),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 14,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
                 icon: isClaimingThis
                     ? const SizedBox(
                         width: 18,
                         height: 18,
                         child: CircularProgressIndicator(
                           strokeWidth: 2,
+                          color: Colors.white,
                         ),
                       )
                     : const Icon(
@@ -1065,56 +1149,6 @@ class _NgoDashboardScreenState
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _InfoRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-
-  const _InfoRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(
-            icon,
-            size: 20,
-            color: Colors.grey.shade700,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    color: Colors.grey.shade700,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  value,
-                  style: const TextStyle(
-                    fontWeight: FontWeight.w600,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
       ),
     );
   }
@@ -1158,32 +1192,46 @@ class _EmptyDonationsView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(28),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.inventory_2_outlined,
-              size: 64,
-              color: Colors.grey.shade500,
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                Icons.inventory_2_outlined,
+                size: 44,
+                color: Colors.grey.shade600,
+              ),
             ),
-            const SizedBox(height: 20),
+            const SizedBox(height: 18),
             Text(
               'No donation listings',
-              style: Theme.of(context).textTheme.titleLarge,
               textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
             ),
             const SizedBox(height: 8),
             Text(
               'New listings will appear when donors publish donations. '
-              'Use the cards above to manage receiving settings, '
-              'find nearby donations, open claimed donations, '
-              'or review delivered donations.',
+              'Use the cards above to manage receiving settings, find '
+              'nearby donations, open claimed donations, or review '
+              'delivered donations.',
               textAlign: TextAlign.center,
-              style: TextStyle(
-                color: Colors.grey.shade700,
-              ),
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Colors.grey.shade700,
+                    height: 1.4,
+                  ),
             ),
           ],
         ),
