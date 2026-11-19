@@ -5,9 +5,9 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/fcm_token_service.dart';
+import '../../widgets/notification_bell_button.dart';
 import 'volunteer_activity_screen.dart';
 import 'volunteer_task_details_screen.dart';
-import '../../widgets/notification_bell_button.dart';
 
 class VolunteerDashboardScreen extends StatefulWidget {
   const VolunteerDashboardScreen({super.key});
@@ -272,13 +272,16 @@ class _VolunteerDashboardScreenState
       approved = await showDialog<bool>(
         context: context,
         builder: (dialogContext) => AlertDialog(
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(20),
+          ),
           title: const Text('Accept this pickup?'),
           content: const Text(
-            'Accept only if you can collect the full donation '
-            'at the planned time and before the pickup deadline.\n\n'
+            'Accept only if you can collect the full donation at the '
+            'planned time and before the pickup deadline.\n\n'
             'Location-based travel feasibility is not calculated yet. '
-            'Confirm practical collection arrangements with the '
-            'donor and NGO.',
+            'Confirm practical collection arrangements with the donor '
+            'and NGO.',
           ),
           actions: [
             TextButton(
@@ -289,6 +292,10 @@ class _VolunteerDashboardScreenState
             FilledButton(
               onPressed: () =>
                   Navigator.of(dialogContext).pop<bool>(true),
+              style: FilledButton.styleFrom(
+                backgroundColor: const Color(0xFF356B4D),
+                foregroundColor: Colors.white,
+              ),
               child: const Text('Accept task'),
             ),
           ],
@@ -311,6 +318,7 @@ class _VolunteerDashboardScreenState
         'Your account changed. Please start again.',
         isError: true,
       );
+
       return;
     }
 
@@ -328,7 +336,6 @@ class _VolunteerDashboardScreenState
           _firestore.collection('users').doc(uid);
 
       await _firestore.runTransaction<void>((transaction) async {
-        // Complete all reads before writing.
         final profileSnapshot = await transaction.get(profileRef);
         final donationSnapshot = await transaction.get(donationRef);
 
@@ -384,6 +391,7 @@ class _VolunteerDashboardScreenState
         'Volunteer assignment failed: '
         '${exception.code} - ${exception.message}',
       );
+
       debugPrintStack(stackTrace: stackTrace);
 
       if (_sameAccount(uid)) {
@@ -485,8 +493,6 @@ class _VolunteerDashboardScreenState
 
     try {
       await FcmTokenService.instance.signOutAndCleanup();
-
-      // AuthGate handles the transition to Login.
     } catch (exception, stackTrace) {
       debugPrint('Volunteer logout failed: $exception');
       debugPrintStack(stackTrace: stackTrace);
@@ -524,42 +530,59 @@ class _VolunteerDashboardScreenState
   }
 
   Widget _buildActivityCard() {
-    return Card(
-      margin: EdgeInsets.zero,
-      child: Padding(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Row(
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(18),
+        border: Border.all(
+          color: Colors.grey.shade200,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: const Color(0xFF356B4D).withValues(alpha: 0.10),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: const Icon(
+              Icons.insights_outlined,
+              color: Color(0xFF356B4D),
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const Icon(
-                  Icons.insights_outlined,
-                  size: 30,
-                  color: Color(0xFF356B4D),
+                Text(
+                  'My volunteer activity',
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
                 ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'My volunteer activity',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
+                const SizedBox(height: 4),
+                Text(
+                  'View assigned tasks, delivery outcomes, and your '
+                  'recorded volunteer activity.',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                      ),
                 ),
               ],
             ),
-            const SizedBox(height: 8),
-            const Text(
-              'View assigned tasks, delivery outcomes, '
-              'and your recorded volunteer activity.',
+          ),
+          IconButton(
+            tooltip: 'My volunteer activity',
+            onPressed: _isBusy ? null : _openActivity,
+            icon: const Icon(
+              Icons.arrow_forward_ios_rounded,
+              size: 18,
             ),
-            const SizedBox(height: 12),
-            OutlinedButton.icon(
-              onPressed: _isBusy ? null : _openActivity,
-              icon: const Icon(Icons.history),
-              label: const Text('View my activity'),
-            ),
-          ],
-        ),
+          ),
+        ],
       ),
     );
   }
@@ -607,7 +630,7 @@ class _VolunteerDashboardScreenState
           child: Column(
             children: [
               Padding(
-                padding: const EdgeInsets.fromLTRB(16, 16, 16, 0),
+                padding: const EdgeInsets.fromLTRB(20, 16, 20, 0),
                 child: _buildActivityCard(),
               ),
               const SizedBox(height: 8),
@@ -649,14 +672,31 @@ class _VolunteerDashboardScreenState
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
+                  const Icon(
+                    Icons.error_outline,
+                    size: 48,
+                    color: Colors.red,
+                  ),
+                  const SizedBox(height: 16),
                   const Text(
                     'Unable to load pickup tasks. '
                     'Check your connection and volunteer account access.',
                     textAlign: TextAlign.center,
                   ),
                   const SizedBox(height: 16),
-                  ElevatedButton.icon(
+                  FilledButton.icon(
                     onPressed: _isBusy ? null : _retryStreams,
+                    style: FilledButton.styleFrom(
+                      backgroundColor: const Color(0xFF356B4D),
+                      foregroundColor: Colors.white,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 20,
+                        vertical: 14,
+                      ),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
                     icon: const Icon(Icons.refresh),
                     label: const Text('Try again'),
                   ),
@@ -701,39 +741,11 @@ class _VolunteerDashboardScreenState
         });
 
         if (documents.isEmpty) {
-          return Center(
-            child: SingleChildScrollView(
-              padding: const EdgeInsets.all(24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Icon(
-                    available
-                        ? Icons.volunteer_activism_outlined
-                        : Icons.local_shipping_outlined,
-                    size: 64,
-                    color: Colors.grey.shade500,
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    available
-                        ? 'No valid pickup opportunities right now.\n\n'
-                            'Donor and NGO confirmations, a valid '
-                            'quantity, and a future pickup plan '
-                            'are required.'
-                        : 'No tasks assigned to you yet.\n\n'
-                            'Accept an opportunity from Available '
-                            'pickups to get started.',
-                    textAlign: TextAlign.center,
-                  ),
-                ],
-              ),
-            ),
-          );
+          return _buildEmptyState(available: available);
         }
 
         return ListView.builder(
-          padding: const EdgeInsets.all(16),
+          padding: const EdgeInsets.all(20),
           itemCount: documents.length,
           itemBuilder: (context, index) {
             return _buildCard(
@@ -743,6 +755,59 @@ class _VolunteerDashboardScreenState
           },
         );
       },
+    );
+  }
+
+  Widget _buildEmptyState({
+    required bool available,
+  }) {
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.grey.shade100,
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                available
+                    ? Icons.volunteer_activism_outlined
+                    : Icons.local_shipping_outlined,
+                size: 44,
+                color: Colors.grey.shade600,
+              ),
+            ),
+            const SizedBox(height: 18),
+            Text(
+              available
+                  ? 'No pickup opportunities'
+                  : 'No tasks assigned',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              available
+                  ? 'Donor and NGO confirmations, a valid quantity, and '
+                      'a future pickup plan are required before a pickup '
+                      'opportunity becomes available.'
+                  : 'Accept an opportunity from Available pickups to get '
+                      'started.',
+              textAlign: TextAlign.center,
+              style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                    color: Colors.grey.shade700,
+                    height: 1.4,
+                  ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -764,83 +829,215 @@ class _VolunteerDashboardScreenState
       key: ValueKey(
         '${available ? 'opportunity' : 'task'}-${document.id}',
       ),
+      elevation: 1,
       margin: const EdgeInsets.only(bottom: 16),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+      ),
       child: Padding(
         padding: const EdgeInsets.all(18),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(
-              _text(data['foodCategory'], 'Food donation'),
-              style: Theme.of(context).textTheme.titleLarge,
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Text(
+                    _text(data['foodCategory'], 'Food donation'),
+                    style:
+                        Theme.of(context).textTheme.titleLarge?.copyWith(
+                              fontWeight: FontWeight.w700,
+                            ),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
+                  decoration: BoxDecoration(
+                    color: const Color(0xFF356B4D)
+                        .withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(20),
+                  ),
+                  child: Text(
+                    available ? 'Available' : _statusLabel(data['status']),
+                    style: const TextStyle(
+                      color: Color(0xFF356B4D),
+                      fontSize: 12,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
             ),
-            const SizedBox(height: 12),
-            Text('Donation ID: ${document.id}'),
-            const SizedBox(height: 8),
-            Text('Quantity: ${_quantityLabel(data['quantity'])}'),
-            const SizedBox(height: 8),
-            Text(
-              'Planned pickup: '
-              '${_formatDate(_date(data['plannedPickupAt']))}',
+            const SizedBox(height: 16),
+            _DetailRow(
+              icon: Icons.inventory_2_outlined,
+              label: 'Quantity',
+              value: _quantityLabel(data['quantity']),
             ),
-            const SizedBox(height: 8),
-            Text('Pickup deadline: ${_formatDate(deadline)}'),
-            const SizedBox(height: 8),
-            Text('Storage: ${_storageLabel(data['storageMethod'])}'),
-            const SizedBox(height: 8),
-            Text(
-              'Allergens: '
-              '${_text(data['allergens'], 'Not declared — do not assume allergen-free')}',
+            _DetailRow(
+              icon: Icons.schedule_outlined,
+              label: 'Planned pickup',
+              value: _formatDate(_date(data['plannedPickupAt'])),
+            ),
+            _DetailRow(
+              icon: Icons.timer_outlined,
+              label: 'Pickup deadline',
+              value: _formatDate(deadline),
+            ),
+            _DetailRow(
+              icon: Icons.kitchen_outlined,
+              label: 'Storage',
+              value: _storageLabel(data['storageMethod']),
+            ),
+            _DetailRow(
+              icon: Icons.warning_amber_outlined,
+              label: 'Allergens',
+              value: _text(
+                data['allergens'],
+                'Not declared — do not assume allergen-free',
+              ),
             ),
             if (showCountdown) ...[
-              const SizedBox(height: 16),
+              const SizedBox(height: 8),
               Container(
-                padding: const EdgeInsets.all(12),
+                padding: const EdgeInsets.all(14),
                 decoration: BoxDecoration(
                   color: countdownColor.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(10),
+                  borderRadius: BorderRadius.circular(14),
                 ),
-                child: Text(
-                  _remainingTime(deadline),
-                  style: TextStyle(
-                    color: countdownColor,
-                    fontWeight: FontWeight.w600,
-                  ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.timer_outlined,
+                      color: countdownColor,
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        _remainingTime(deadline),
+                        style: TextStyle(
+                          color: countdownColor,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
-            const SizedBox(height: 16),
+            const SizedBox(height: 18),
             if (available)
-              ElevatedButton.icon(
+              FilledButton.icon(
                 onPressed:
                     _isBusy ? null : () => _acceptTask(document.id),
+                style: FilledButton.styleFrom(
+                  backgroundColor: const Color(0xFF356B4D),
+                  foregroundColor: Colors.white,
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 14,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
                 icon: accepting
                     ? const SizedBox(
                         width: 18,
                         height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
+                        child: CircularProgressIndicator(
+                          strokeWidth: 2,
+                          color: Colors.white,
+                        ),
                       )
                     : const Icon(Icons.check_circle_outline),
                 label: Text(
                   accepting ? 'Accepting...' : 'Accept pickup task',
                 ),
               )
-            else ...[
-              Text(
-                'Status: ${_statusLabel(data['status'])}',
-                style: const TextStyle(fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 16),
+            else
               OutlinedButton.icon(
                 onPressed: _isBusy
                     ? null
                     : () => _openTaskDetails(document.id),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: const Color(0xFF356B4D),
+                  side: BorderSide(
+                    color: const Color(0xFF356B4D)
+                        .withValues(alpha: 0.45),
+                  ),
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 14,
+                  ),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(14),
+                  ),
+                ),
                 icon: const Icon(Icons.visibility_outlined),
                 label: const Text('View task details'),
               ),
-            ],
           ],
         ),
+      ),
+    );
+  }
+}
+
+class _DetailRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+
+  const _DetailRow({
+    required this.icon,
+    required this.label,
+    required this.value,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              icon,
+              size: 18,
+              color: Colors.grey.shade700,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
