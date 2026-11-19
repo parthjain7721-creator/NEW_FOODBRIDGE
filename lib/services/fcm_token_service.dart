@@ -8,6 +8,7 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_messaging/firebase_messaging.dart';
 import 'package:flutter/foundation.dart';
 import 'workflow_notification_service.dart';
+import 'notification_badge_service.dart';
 
 class FcmTokenService {
   FcmTokenService._();
@@ -155,6 +156,7 @@ class FcmTokenService {
   );
 
   WorkflowNotificationService.instance.stop();
+  NotificationBadgeService.instance.reset();
 
   if (uid != null && uid.isNotEmpty) {
     await _deleteTokensForUser(uid);

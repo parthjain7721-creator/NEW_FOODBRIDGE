@@ -8,6 +8,7 @@ import '../models/app_notification.dart';
 import '../screens/ngo/donation_details_screen.dart';
 import 'local_notification_store.dart';
 import 'notification_service.dart';
+import 'notification_badge_service.dart';
 
 class WorkflowNotificationService {
   WorkflowNotificationService._();
@@ -590,17 +591,15 @@ class WorkflowNotificationService {
     final int unreadCount = await LocalNotificationStore.instance
         .getUnreadCount(uid);
 
-    final List<AppNotification> savedNotifications =
-        await LocalNotificationStore.instance.getNotifications(uid);
+    NotificationBadgeService.instance.setUnreadCount(unreadCount);
 
     debugPrint(
       'Workflow notification saved locally. '
       'uid=$uid '
-      'total=${savedNotifications.length} '
       'unread=$unreadCount '
       'title=${notification.title}',
     );
-  } 
+  }  
   catch (error, stackTrace) {
     debugPrint(
       'Failed to save workflow notification locally: $error',

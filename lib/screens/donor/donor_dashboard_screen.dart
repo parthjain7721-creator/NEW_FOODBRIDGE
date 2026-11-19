@@ -2,10 +2,11 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
 import '../../services/fcm_token_service.dart';
+import '../../widgets/dashboard_action_card.dart';
+import '../../widgets/section_header.dart';
 import 'create_donation_screen.dart';
 import 'donor_donation_history_screen.dart';
 import 'donor_pickup_confirmations_screen.dart';
-import '../../widgets/notification_bell_button.dart';
 
 class DonorDashboardScreen extends StatefulWidget {
   const DonorDashboardScreen({super.key});
@@ -30,14 +31,12 @@ class _DonorDashboardScreenState
 
     try {
       await FcmTokenService.instance.signOutAndCleanup();
-
-      // AuthGate handles the transition back to Login.
-      // Do not push a separate LoginScreen here.
     } on FirebaseAuthException catch (exception, stackTrace) {
       debugPrint(
         'Donor logout failed: '
         '${exception.code} - ${exception.message}',
       );
+
       debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
@@ -50,6 +49,7 @@ class _DonorDashboardScreenState
       );
     } catch (exception, stackTrace) {
       debugPrint('Unexpected donor logout error: $exception');
+
       debugPrintStack(stackTrace: stackTrace);
 
       if (!mounted) {
@@ -118,66 +118,12 @@ class _DonorDashboardScreenState
       );
   }
 
-  Widget _dashboardCard({
-    required IconData icon,
-    required String title,
-    required String description,
-    required String buttonLabel,
-    required IconData buttonIcon,
-    required VoidCallback onPressed,
-    String? additionalInformation,
-    bool primary = false,
-  }) {
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.all(20),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(
-              icon,
-              size: 48,
-              color: const Color(0xFF356B4D),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              style: Theme.of(context).textTheme.titleLarge,
-            ),
-            const SizedBox(height: 8),
-            Text(description),
-            if (additionalInformation != null) ...[
-              const SizedBox(height: 12),
-              Text(additionalInformation),
-            ],
-            const SizedBox(height: 20),
-            SizedBox(
-              width: double.infinity,
-              child: primary
-                  ? ElevatedButton.icon(
-                      onPressed: _isSigningOut ? null : onPressed,
-                      icon: Icon(buttonIcon),
-                      label: Text(buttonLabel),
-                    )
-                  : OutlinedButton.icon(
-                      onPressed: _isSigningOut ? null : onPressed,
-                      icon: Icon(buttonIcon),
-                      label: Text(buttonLabel),
-                    ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Donor Dashboard'),
         actions: [
-          const NotificationBellButton(),
           IconButton(
             tooltip: 'Donation history',
             onPressed: _isSigningOut ? null : _openDonationHistory,
@@ -206,115 +152,244 @@ class _DonorDashboardScreenState
       ),
       body: SafeArea(
         child: ListView(
-          padding: const EdgeInsets.all(24),
+          padding: const EdgeInsets.all(20),
           children: [
-            Text(
-              'Make a difference today',
-              style: Theme.of(context).textTheme.headlineMedium,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Share surplus food, coordinate collection, '
-              'and follow your donation through delivery '
-              'and NGO review.',
-              style: Theme.of(context).textTheme.bodyLarge,
-            ),
-            const SizedBox(height: 28),
-
-            _dashboardCard(
+            _buildWelcomeHeader(),
+            const SizedBox(height: 24),
+            DashboardActionCard(
               icon: Icons.volunteer_activism_outlined,
               title: 'Create a Donation Passport',
               description:
                   'Add food details, quantity, storage information, '
                   'packaging condition, allergens, and preparation time.',
               buttonLabel: 'Create donation',
-              buttonIcon: Icons.add_circle_outline,
-              onPressed: _openCreateDonation,
+              onPressed: _isSigningOut ? null : _openCreateDonation,
               primary: true,
             ),
-
-            const SizedBox(height: 20),
-
-            _dashboardCard(
+            const SizedBox(height: 16),
+            DashboardActionCard(
               icon: Icons.event_available_outlined,
               title: 'Confirm pickup arrangements',
               description:
-                  'Review donations claimed by NGOs, check the '
-                  'planned pickup time, and confirm that the '
-                  'donation is still available for handover.',
+                  'Review donations claimed by NGOs, check the planned '
+                  'pickup time, and confirm that the donation is still '
+                  'available for handover.',
               additionalInformation:
-                  'The NGO must confirm receiving capacity and '
-                  'pickup time before you can confirm the arrangement.',
+                  'The NGO must confirm receiving capacity and pickup '
+                  'time before you can confirm the arrangement.',
               buttonLabel: 'View pickup confirmations',
-              buttonIcon: Icons.check_circle_outline,
-              onPressed: _openPickupConfirmations,
+              onPressed:
+                  _isSigningOut ? null : _openPickupConfirmations,
             ),
-
-            const SizedBox(height: 20),
-
-            _dashboardCard(
-              icon: Icons.history,
+            const SizedBox(height: 16),
+            DashboardActionCard(
+              icon: Icons.receipt_long_outlined,
               title: 'Track your donations',
               description:
-                  'View your donation history and expand a donation '
-                  'to see its recorded progress: NGO claim, pickup '
-                  'confirmations, volunteer assignment, collection, '
-                  'delivery, and the NGO’s final decision.',
+                  'View your donation history and follow each donation '
+                  'through NGO claim, pickup confirmation, volunteer '
+                  'assignment, collection, delivery, and NGO review.',
               additionalInformation:
                   'Use the history filters to view active donations, '
                   'accepted deliveries, or other closed donations.',
               buttonLabel: 'My donation history',
-              buttonIcon: Icons.receipt_long_outlined,
-              onPressed: _openDonationHistory,
+              onPressed:
+                  _isSigningOut ? null : _openDonationHistory,
             ),
+            const SizedBox(height: 28),
+            _buildWorkflowCard(),
+            const SizedBox(height: 24),
+            _buildDisclaimer(),
+            const SizedBox(height: 16),
+          ],
+        ),
+      ),
+    );
+  }
 
-            const SizedBox(height: 20),
-
-            Card(
-              child: Padding(
-                padding: const EdgeInsets.all(20),
+  Widget _buildWelcomeHeader() {
+    return Container(
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: const Color(0xFF356B4D).withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: const Color(0xFF356B4D),
+                  borderRadius: BorderRadius.circular(14),
+                ),
+                child: const Icon(
+                  Icons.volunteer_activism_outlined,
+                  color: Colors.white,
+                ),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
                     Text(
-                      'How donation and delivery work',
-                      style: Theme.of(context).textTheme.titleMedium,
+                      'Make a difference today',
+                      style:
+                          Theme.of(context).textTheme.titleLarge?.copyWith(
+                                fontWeight: FontWeight.w800,
+                              ),
                     ),
-                    const SizedBox(height: 12),
-                    const Text(
-                      '1. Create a Donation Passport.\n\n'
-                      '2. An NGO claims the donation.\n\n'
-                      '3. The NGO confirms capacity and pickup time.\n\n'
-                      '4. You confirm the pickup arrangement.\n\n'
-                      '5. A volunteer accepts the pickup task.\n\n'
-                      '6. The volunteer matches the Donation Passport '
-                      'QR and records the pickup inspection.\n\n'
-                      '7. After collection, the volunteer records '
-                      'delivery handover to the receiving NGO.\n\n'
-                      '8. The receiving NGO accepts or rejects '
-                      'the delivery.\n\n'
-                      '9. View the saved progress and final decision '
-                      'in My donation history.',
+                    const SizedBox(height: 4),
+                    Text(
+                      'Share surplus food and follow its journey '
+                      'to people who need it.',
+                      style:
+                          Theme.of(context).textTheme.bodyMedium?.copyWith(
+                                color: Colors.grey.shade700,
+                              ),
                     ),
                   ],
                 ),
               ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWorkflowCard() {
+    return Card(
+      elevation: 1,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(18),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(20),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const SectionHeader(
+              title: 'How donation and delivery work',
+              subtitle:
+                  'FoodBridge coordinates each donation through a clear '
+                  'rescue workflow.',
+              icon: Icons.route_outlined,
             ),
-
-            const SizedBox(height: 20),
-
-            Text(
-              'FoodBridge calculates redistribution eligibility from '
-              'declarations and rules. It does not certify food safety.',
-              textAlign: TextAlign.center,
-              style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Colors.grey.shade700,
-                  ),
+            const SizedBox(height: 8),
+            _WorkflowStep(
+              number: '1',
+              title: 'Create a Donation Passport',
+              description:
+                  'Add the food details, quantity, storage information, '
+                  'and pickup window.',
             ),
-
-            const SizedBox(height: 16),
+            _WorkflowStep(
+              number: '2',
+              title: 'NGO claims the donation',
+              description:
+                  'A nearby NGO reviews the donation and claims it for '
+                  'receiving.',
+            ),
+            _WorkflowStep(
+              number: '3',
+              title: 'Confirm pickup arrangements',
+              description:
+                  'The NGO confirms capacity and pickup time, then you '
+                  'confirm your availability.',
+            ),
+            _WorkflowStep(
+              number: '4',
+              title: 'Volunteer collects and delivers',
+              description:
+                  'A volunteer accepts the pickup task, collects the '
+                  'donation, and delivers it to the NGO.',
+            ),
+            _WorkflowStep(
+              number: '5',
+              title: 'NGO completes the review',
+              description:
+                  'The receiving NGO accepts or rejects the delivered '
+                  'donation.',
+            ),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildDisclaimer() {
+    return Text(
+      'FoodBridge calculates redistribution eligibility from '
+      'declarations and rules. It does not certify food safety.',
+      textAlign: TextAlign.center,
+      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+            color: Colors.grey.shade700,
+          ),
+    );
+  }
+}
+
+class _WorkflowStep extends StatelessWidget {
+  final String number;
+  final String title;
+  final String description;
+
+  const _WorkflowStep({
+    required this.number,
+    required this.title,
+    required this.description,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: const Color(0xFF356B4D).withValues(alpha: 0.12),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              number,
+              style: const TextStyle(
+                color: Color(0xFF356B4D),
+                fontWeight: FontWeight.w800,
+              ),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                        fontWeight: FontWeight.w700,
+                      ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  description,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Colors.grey.shade700,
+                        height: 1.35,
+                      ),
+                ),
+              ],
+            ),
+          ),
+        ],
       ),
     );
   }
