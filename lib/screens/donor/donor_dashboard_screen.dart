@@ -7,6 +7,7 @@ import '../../widgets/section_header.dart';
 import 'create_donation_screen.dart';
 import 'donor_donation_history_screen.dart';
 import 'donor_pickup_confirmations_screen.dart';
+import '../../widgets/notification_bell_button.dart';
 
 class DonorDashboardScreen extends StatefulWidget {
   const DonorDashboardScreen({super.key});
@@ -124,6 +125,7 @@ class _DonorDashboardScreenState
       appBar: AppBar(
         title: const Text('Donor Dashboard'),
         actions: [
+          const NotificationBellButton(),
           IconButton(
             tooltip: 'Donation history',
             onPressed: _isSigningOut ? null : _openDonationHistory,
