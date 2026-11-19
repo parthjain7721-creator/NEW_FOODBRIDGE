@@ -309,7 +309,7 @@ class _NotificationCenterScreenState
       child: ListView.separated(
         padding: const EdgeInsets.all(12),
         itemCount: _notifications.length,
-        separatorBuilder: (_, __) => const SizedBox(height: 8),
+        separatorBuilder: (_, _) => const SizedBox(height: 8),
         itemBuilder: (BuildContext context, int index) {
           final AppNotification notification = _notifications[index];
 

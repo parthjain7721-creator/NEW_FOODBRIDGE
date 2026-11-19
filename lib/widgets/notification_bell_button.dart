@@ -1,7 +1,6 @@
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 
-import '../models/app_notification.dart';
 import '../screens/notifications/notification_center_screen.dart';
 import '../services/local_notification_store.dart';
 

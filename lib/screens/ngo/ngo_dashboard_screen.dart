@@ -10,6 +10,7 @@ import 'ngo_claimed_donations_screen.dart';
 import 'ngo_delivery_inbox_screen.dart';
 import 'ngo_nearby_donations_screen.dart';
 import 'ngo_receiving_settings_screen.dart';
+import '../../widgets/notification_bell_button.dart';
 
 class NgoDashboardScreen extends StatefulWidget {
   const NgoDashboardScreen({super.key});
@@ -722,6 +723,7 @@ class _NgoDashboardScreenState
       appBar: AppBar(
         title: const Text('NGO Dashboard'),
         actions: [
+          const NotificationBellButton(),
           PopupMenuButton<String>(
             tooltip: 'NGO actions',
             enabled: !_isBusy,

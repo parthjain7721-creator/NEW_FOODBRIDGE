@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import '../../services/fcm_token_service.dart';
 import 'volunteer_activity_screen.dart';
 import 'volunteer_task_details_screen.dart';
+import '../../widgets/notification_bell_button.dart';
 
 class VolunteerDashboardScreen extends StatefulWidget {
   const VolunteerDashboardScreen({super.key});
@@ -571,6 +572,7 @@ class _VolunteerDashboardScreenState
         appBar: AppBar(
           title: const Text('Volunteer Dashboard'),
           actions: [
+            const NotificationBellButton(),
             IconButton(
               tooltip: 'My volunteer activity',
               onPressed: _isBusy ? null : _openActivity,
